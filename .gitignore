@@ -3,6 +3,17 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# externals (includes full original model repos)
+external/
+
+# datasets (original audios and other files from datasets)
+datasets/
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+
 # C extensions
 *.so
 
