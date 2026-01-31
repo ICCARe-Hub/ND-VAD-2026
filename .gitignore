@@ -4,10 +4,10 @@ __pycache__/
 *$py.class
 
 # externals (includes full original model repos)
-external/
+#external/
 
 # datasets (original audios and other files from datasets)
-datasets/
+#datasets/
 *.wav
 *.flac
 *.mp3
