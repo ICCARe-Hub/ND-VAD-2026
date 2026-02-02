@@ -1,0 +1,17 @@
+devkit_root: external/VOiCES_devkit
+distant_root: distant-16k/speech
+
+split: test
+rooms: [rm4]
+conditions: [babb, musi]
+speakers: []
+mic_types: []        # [stu] or [lav]
+mic_locations: [clo]    # [clo] or [clo, far]
+
+max_hours: 1.0
+seed: 1337
+mode: symlink
+
+out_root: datasets/VOiCES/test
+
+exclude_speakers_from_manifest: datasets/VOiCES/train/manifest.csv
