@@ -140,7 +140,17 @@ def main(cfg_path: Path):
     rooms = cfg["rooms"]
     conditions = cfg["conditions"]
     speakers = cfg.get("speakers", []) or []
-    max_hours = float(cfg["max_hours"])
+    
+    max_hours = cfg.get("max_hours", None)
+    if max_hours is not None:
+        max_hours = float(max_hours)
+
+    speaker_percentage = cfg.get("speaker_percentage", None)
+    if speaker_percentage is not None:
+        speaker_percentage = float(speaker_percentage)
+        if not (0.0 < speaker_percentage <= 1.0):
+            raise ValueError("speaker_percentage must be in (0, 1].")
+    
     seed = int(cfg["seed"])
     mode = str(cfg["mode"]).strip()
     out_root = Path(cfg["out_root"])
@@ -165,7 +175,7 @@ def main(cfg_path: Path):
     # Collect candidates
     candidates = list_wavs(devkit_root, distant_root, split, rooms, conditions, speakers)
     if not candidates:
-        raise RuntimeError("No WAV files matched rooms/conditions/speakers. Check your config and devkit paths.")
+        raise RuntimeError("No WAV files matched rooms/conditions/speakers. Check config and dataset paths.")
 
     total_candidates = len(candidates)
 
@@ -189,14 +199,32 @@ def main(cfg_path: Path):
         filtered.append(wav)
 
     candidates = filtered
-    print(f"Matched candidates (tree): {total_candidates}")
+    print(f"Matched candidates: {total_candidates}")
     print(f"Matched candidates (after speaker+mic filters): {len(candidates)}")
 
     if not candidates:
-        raise RuntimeError("No WAV files remain after speaker/mic filtering. Relax mic_types/mic_locations or exclusion.")
+        raise RuntimeError("No WAV files remain after speaker and/or mic filtering.")
 
     random.seed(seed)
     random.shuffle(candidates)
+
+    speaker_limit = None
+    if speaker_percentage is not None:
+        speakers_in_candidates = []
+        for wav in candidates:
+            _, _, speaker = parse_path_metadata(wav, split)
+            if speaker:
+                speakers_in_candidates.append(speaker)
+
+        unique_speakers = sorted(set(speakers_in_candidates))
+        total_speakers = len(unique_speakers)
+
+        speaker_limit = int(total_speakers * speaker_percentage)
+        speaker_limit = max(1, speaker_limit)
+
+        print(f"Total speakers after filtering: {total_speakers}")
+        print(f"Speaker percentage: {speaker_percentage}")
+        print(f"Speaker cutoff: {speaker_limit}")
 
     # Select until max_hours
     selected: List[Tuple[Path, float, int]] = []
@@ -215,7 +243,37 @@ def main(cfg_path: Path):
         if total_sec >= max_hours * 3600:
             break
 
-    # Write manifest + create links/copies
+    selected: List[Tuple[Path, float, int]] = []
+    total_sec = 0.0
+    seen_speakers: Set[str] = set()
+
+    for wav in candidates:
+        room, cond, speaker = parse_path_metadata(wav, split)
+
+        # Speaker percentage stopping condition
+        if speaker_limit is not None:
+            if speaker not in seen_speakers and len(seen_speakers) >= speaker_limit:
+                break
+
+        info = sf.info(str(wav))
+        dur = info.frames / info.samplerate
+
+        # Max-hours stopping condition (if enabled)
+        if max_hours is not None:
+            if total_sec + dur > max_hours * 3600:
+                continue
+
+        selected.append((wav, dur, info.samplerate))
+        total_sec += dur
+        if speaker:
+            seen_speakers.add(speaker)
+
+        if max_hours is not None:
+            if total_sec >= max_hours * 3600:
+                break
+
+
+    # Write manifest and create links/copies
     manifest_path = out_root / "manifest.csv"
     with open(manifest_path, "w", newline="") as f:
         w = csv.writer(f)
@@ -260,7 +318,7 @@ def main(cfg_path: Path):
     print(f"Selected files: {len(selected)}")
     print(f"Total duration: {total_sec/3600:.3f} hours")
     print(f"Wrote manifest: {manifest_path}")
-    print(f"Output noisy dir: {noisy_out}")
+    print(f"Output noisy directory: {noisy_out}")
 
 
 if __name__ == "__main__":

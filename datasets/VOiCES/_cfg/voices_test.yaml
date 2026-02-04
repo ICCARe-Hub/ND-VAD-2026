@@ -8,7 +8,8 @@ speakers: []
 mic_types: []        # [stu] or [lav]
 mic_locations: [clo]    # [clo] or [clo, far]
 
-max_hours: 1.0
+max_hours: null          # optional (null or give float: e.g. 2.5)
+speaker_percentage: 0.33
 seed: 1337
 mode: symlink
 
