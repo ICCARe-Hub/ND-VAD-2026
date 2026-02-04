@@ -229,22 +229,6 @@ def main(cfg_path: Path):
     # Select until max_hours
     selected: List[Tuple[Path, float, int]] = []
     total_sec = 0.0
-
-    for wav in candidates:
-        info = sf.info(str(wav))
-        dur = info.frames / info.samplerate
-
-        if total_sec + dur > max_hours * 3600:
-            continue
-
-        selected.append((wav, dur, info.samplerate))
-        total_sec += dur
-
-        if total_sec >= max_hours * 3600:
-            break
-
-    selected: List[Tuple[Path, float, int]] = []
-    total_sec = 0.0
     seen_speakers: Set[str] = set()
 
     for wav in candidates:
@@ -258,7 +242,7 @@ def main(cfg_path: Path):
         info = sf.info(str(wav))
         dur = info.frames / info.samplerate
 
-        # Max-hours stopping condition (if enabled)
+        # Max-hours stopping condition (optional)
         if max_hours is not None:
             if total_sec + dur > max_hours * 3600:
                 continue
