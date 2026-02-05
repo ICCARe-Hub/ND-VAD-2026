@@ -199,6 +199,7 @@ class ResolutionMapDataset(Dataset):
     def extract_single_data(audio_path, voice_activity_path, feature_extractor):
         print("audio_path", audio_path)
         feature = feature_extractor.extract_from_path_with_postprocessing(audio_path=audio_path)
+        audio_data = AudioData.load(audio_path)
 
         if voice_activity_path.suffix == ".json":
             audio_data = AudioData.load(audio_path)
@@ -208,7 +209,7 @@ class ResolutionMapDataset(Dataset):
         else:
             if voice_activity_path.suffix == ".npy":
                 raw_label = np.load(voice_activity_path)
-                raw_label = raw_label.astype(np.long)
+                raw_label = raw_label.astype(np.int64)
 
             elif voice_activity_path.suffix == ".mat":
                 loaded_mat = loadmat(str(voice_activity_path))
@@ -216,7 +217,8 @@ class ResolutionMapDataset(Dataset):
             else:
                 raise NotImplementedError
 
-            label_indices = np.arange(0, len(raw_label), step=feature_extractor.hop_samples)
+            hop_samples = int(feature_extractor.config.transform.hop_ms / 1000 * audio_data.sample_rate)
+            label_indices = np.arange(0, len(raw_label), step=hop_samples)
             labels = raw_label[label_indices]
 
         return feature, labels

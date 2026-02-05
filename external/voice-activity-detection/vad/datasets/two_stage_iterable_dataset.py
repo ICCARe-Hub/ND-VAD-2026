@@ -42,6 +42,10 @@ class TwoStageIterableDataset(IterableDataset):
             dataset = self.map_dataset(
                 data_pairs=workload_chunk, num_workers=self.num_workers, **self.kwargs
             )
+
+            if len(dataset) == 0:
+                continue
+
             sampler = RandomSampler(data_source=dataset)
 
             for sample in sampler:

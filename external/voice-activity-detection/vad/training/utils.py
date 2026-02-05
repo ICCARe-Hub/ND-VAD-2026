@@ -50,7 +50,7 @@ def to_device(batch: Any, device: torch.device):
 def to_float(batch: Any):
     if isinstance(batch, float):
         return batch
-    elif isinstance(batch, torch.Tensor) or isinstance(batch, np.float):
+    elif isinstance(batch, torch.Tensor) or isinstance(batch, float):
         return float(batch)
     elif isinstance(batch, Mapping):
         return {key: to_float(value) for key, value in batch.items()}

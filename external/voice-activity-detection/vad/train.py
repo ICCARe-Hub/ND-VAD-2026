@@ -34,7 +34,8 @@ def train_vad_from_scratch(
     config: TrainConfig
     config = OmegaConf.structured(TrainConfig)
     config = OmegaConf.merge(config, OmegaConf.load(config_path))
-    config = OmegaConf.merge(config, OmegaConf.from_dotlist(set))
+    if set:
+        config = OmegaConf.merge(config, OmegaConf.from_dotlist(set))
 
     seed_everything(config.random_seed)
 

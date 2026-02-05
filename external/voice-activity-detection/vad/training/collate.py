@@ -1,7 +1,10 @@
 import re
-
 import torch
-from torch._six import container_abcs, int_classes, string_classes
+#from torch._six import container_abcs, int_classes, string_classes
+import collections.abc as container_abcs
+
+int_classes = (int,)
+string_classes = (str,)
 from torch.nn.utils.rnn import pad_sequence
 
 np_str_obj_array_pattern = re.compile(r"[SaUO]")

@@ -4,7 +4,7 @@ from typing import Optional
 
 from omegaconf import MISSING
 from torch.optim import Adam
-from transformers import AdamW
+from torch.optim import AdamW
 
 from vad.optimizers.adam import AdamConfig
 
