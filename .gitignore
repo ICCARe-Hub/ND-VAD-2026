@@ -4,15 +4,19 @@ __pycache__/
 *$py.class
 
 # externals (includes full original model repos)
-#external/
+external/MS-SNSD/
+external/ONDRI DDK Data/
+external/SincQDR-VAD/
+external/VOiCES_devkit/
+#external/voice-activity-detection/
 
 # datasets (original audios and other files from datasets)
-#datasets/
-*.wav
-*.flac
-*.mp3
-*.m4a
-*.ogg
+datasets/*
+!datasets/
+!datasets/VOiCES/
+datasets/VOiCES/*
+!datasets/VOiCES/_cfg/
+!datasets/VOiCES/_cfg/**
 
 # C extensions
 *.so
