@@ -2,6 +2,7 @@ import os
 import json
 import argparse
 from pathlib import Path
+
 import torch
 
 
@@ -78,7 +79,7 @@ def main():
 
         if i % args.progress_every == 0 or i == len(files):
             speech_ratio = (
-                sum(seg["end"] - seg["start"] for seg in speech_ts) / len(audio)
+                sum(seg["end"] - seg["start"] for seg in speech) / len(audio)
                 if speech else 0.0
             )
             print(f"[{i}/{len(files)}] {wav_path.name} | speech_ratio={speech_ratio:.2f}")
