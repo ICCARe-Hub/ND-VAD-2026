@@ -1,17 +1,18 @@
 devkit_root: external/VOiCES_devkit
 distant_root: distant-16k/speech
 
-split: test            # train or test
-rooms: [rm1]            # e.g., [rm1, rm2, rm3, rm4]
-conditions: [babb, musi]      # folder under room, Choices: musi, babb, tele
+split: train            # train or test
+rooms: [rm1, rm2, rm3, rm4]            # e.g., [rm1, rm2, rm3, rm4]
+conditions: [babb, tele]      # folder under room, Choices: musi, babb, tele
 speakers: []            # empty is for all speakers, or specify like [sp6550, sp2952]
 mic_types: []        # [stu] or [lav]
-mic_locations: []    # [clo] or [far] or [clo, far]
+mic_locations: [clo]    # [clo] or [far] or [clo, far]
 
 max_hours: null          # optional (null or give float: e.g. 2.5)
-speaker_percentage: 0.60
+speaker_count: 180
 seed: 1337
 mode: symlink
 out_root: datasets/VOiCES/train       # datasets/VOiCES/test for test set
+val_out_root: datasets/VOiCES/val
 
 exclude_speakers_from_manifest: null
