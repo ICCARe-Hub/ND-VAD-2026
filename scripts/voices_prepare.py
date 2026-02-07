@@ -4,7 +4,7 @@ import random
 import argparse
 from pathlib import Path
 from typing import Dict, Optional, List, Set, Tuple
-
+from collections import defaultdict
 import yaml
 import soundfile as sf
 
@@ -128,6 +128,56 @@ def normalize_str_list(x) -> List[str]:
         return []
     return [str(v).strip() for v in x if str(v).strip()]
 
+def write_split(selected, out_root, split, mode):
+    noisy_out = out_root / "noisy"
+    ensure_dir(noisy_out)
+
+    manifest_path = out_root / "manifest.csv"
+    total_sec = 0.0
+
+    with open(manifest_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "dst_file",
+            "src_path",
+            "duration_sec",
+            "samplerate",
+            "split",
+            "room",
+            "condition",
+            "speaker",
+            "mic_id",
+            "mic_type",
+            "mic_location",
+            "deg",
+        ])
+
+        for src, dur, sr in selected:
+            room, cond, speaker = parse_path_metadata(src, split)
+            tokens = parse_voices_tokens(src.stem)
+
+            dst = noisy_out / src.name
+            link_or_copy(src, dst, mode)
+
+            w.writerow([
+                src.name,
+                str(src),
+                f"{dur:.3f}",
+                sr,
+                split,
+                room,
+                cond,
+                speaker,
+                tokens["mic_id"],
+                tokens["mic_type"],
+                tokens["mic_location"],
+                tokens["deg"],
+            ])
+
+            total_sec += dur
+
+    print(f"{out_root.name}: {len(selected)} files, {total_sec/3600:.3f} hours")
+
 
 def main(cfg_path: Path):
     with open(cfg_path, "r") as f:
@@ -144,16 +194,17 @@ def main(cfg_path: Path):
     max_hours = cfg.get("max_hours", None)
     if max_hours is not None:
         max_hours = float(max_hours)
-
-    speaker_percentage = cfg.get("speaker_percentage", None)
-    if speaker_percentage is not None:
-        speaker_percentage = float(speaker_percentage)
-        if not (0.0 < speaker_percentage <= 1.0):
-            raise ValueError("speaker_percentage must be in (0, 1].")
     
     seed = int(cfg["seed"])
     mode = str(cfg["mode"]).strip()
     out_root = Path(cfg["out_root"])
+    speaker_count = cfg.get("speaker_count", None)
+    if speaker_count is not None:
+        speaker_count = int(speaker_count)
+
+    val_out_root = cfg.get("val_out_root", None)
+    if val_out_root is not None:
+        val_out_root = Path(val_out_root)
 
 
     # Optional speaker exclusion
@@ -208,101 +259,58 @@ def main(cfg_path: Path):
     random.seed(seed)
     random.shuffle(candidates)
 
-    speaker_limit = None
-    if speaker_percentage is not None:
-        speakers_in_candidates = []
-        for wav in candidates:
-            _, _, speaker = parse_path_metadata(wav, split)
-            if speaker:
-                speakers_in_candidates.append(speaker)
-
-        unique_speakers = sorted(set(speakers_in_candidates))
-        total_speakers = len(unique_speakers)
-
-        speaker_limit = int(total_speakers * speaker_percentage)
-        speaker_limit = max(1, speaker_limit)
-
-        print(f"Total speakers after filtering: {total_speakers}")
-        print(f"Speaker percentage: {speaker_percentage}")
-        print(f"Speaker cutoff: {speaker_limit}")
-
-    # Select until max_hours
-    selected: List[Tuple[Path, float, int]] = []
-    total_sec = 0.0
-    seen_speakers: Set[str] = set()
+    speaker_to_wavs = defaultdict(list)
 
     for wav in candidates:
-        room, cond, speaker = parse_path_metadata(wav, split)
-
-        # Speaker percentage stopping condition
-        if speaker_limit is not None:
-            if speaker not in seen_speakers and len(seen_speakers) >= speaker_limit:
-                break
-
-        info = sf.info(str(wav))
-        dur = info.frames / info.samplerate
-
-        # Max-hours stopping condition (optional)
-        if max_hours is not None:
-            if total_sec + dur > max_hours * 3600:
-                continue
-
-        selected.append((wav, dur, info.samplerate))
-        total_sec += dur
+        _, _, speaker = parse_path_metadata(wav, split)
         if speaker:
-            seen_speakers.add(speaker)
+            speaker_to_wavs[speaker].append(wav)
 
-        if max_hours is not None:
-            if total_sec >= max_hours * 3600:
-                break
+    all_speakers = sorted(speaker_to_wavs.keys())
 
+    random.seed(seed)
+    random.shuffle(all_speakers)
 
-    # Write manifest and create links/copies
-    manifest_path = out_root / "manifest.csv"
-    with open(manifest_path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow([
-            "dst_file",
-            "src_path",
-            "duration_sec",
-            "samplerate",
-            "split",
-            "room",
-            "condition",
-            "speaker",
-            "mic_id",
-            "mic_type",
-            "mic_location",
-            "deg",
-        ])
+    total_speakers = len(all_speakers)
+    print(f"Total speakers after filtering: {total_speakers}")
 
-        for src, dur, sr in selected:
-            room, cond, speaker = parse_path_metadata(src, split)
-            tokens = parse_voices_tokens(src.stem)
+    if speaker_count is not None:
+        if speaker_count >= total_speakers:
+            raise ValueError(
+                f"speaker_count ({speaker_count}) must be < total speakers ({total_speakers})"
+            )
 
-            dst_name = src.name
-            dst = noisy_out / dst_name
-            link_or_copy(src, dst, mode)
+        train_speakers = set(all_speakers[:speaker_count])
+        val_speakers = set(all_speakers[speaker_count:])
 
-            w.writerow([
-                dst_name,
-                str(src),
-                f"{dur:.3f}",
-                sr,
-                split,
-                room,
-                cond,
-                speaker,
-                tokens["mic_id"],
-                tokens["mic_type"],
-                tokens["mic_location"],
-                tokens["deg"],
-            ])
+        print(f"Train speakers: {len(train_speakers)}")
+        print(f"Val speakers: {len(val_speakers)}")
+    else:
+        train_speakers = set(all_speakers)
+        val_speakers = set()
 
-    print(f"Selected files: {len(selected)}")
-    print(f"Total duration: {total_sec/3600:.3f} hours")
-    print(f"Wrote manifest: {manifest_path}")
-    print(f"Output noisy directory: {noisy_out}")
+    train_selected: List[Tuple[Path, float, int]] = []
+    val_selected: List[Tuple[Path, float, int]] = []
+
+    train_sec = 0.0
+    val_sec = 0.0
+
+    for speaker, wavs in speaker_to_wavs.items():
+        for wav in wavs:
+            info = sf.info(str(wav))
+            dur = info.frames / info.samplerate
+
+            if speaker in train_speakers:
+                train_selected.append((wav, dur, info.samplerate))
+                train_sec += dur
+            elif speaker in val_speakers:
+                val_selected.append((wav, dur, info.samplerate))
+                val_sec += dur
+
+    write_split(train_selected, out_root, split, mode)
+
+    if val_out_root is not None and val_selected:
+        write_split(val_selected, val_out_root, split, mode)
 
 
 if __name__ == "__main__":
