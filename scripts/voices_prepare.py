@@ -162,8 +162,8 @@ def write_split(selected, out_root, split, mode):
             w.writerow([
                 src.name,
                 str(src),
-                f"{dur:.3f}",
-                sr,
+                "" if dur is None else f"{dur:.3f}",
+                "" if sr is None else sr,
                 split,
                 room,
                 cond,
@@ -174,7 +174,7 @@ def write_split(selected, out_root, split, mode):
                 tokens["deg"],
             ])
 
-            total_sec += dur
+            #print(f"{out_root.name}: {len(selected)} files")
 
     print(f"{out_root.name}: {len(selected)} files, {total_sec/3600:.3f} hours")
 
@@ -297,15 +297,13 @@ def main(cfg_path: Path):
 
     for speaker, wavs in speaker_to_wavs.items():
         for wav in wavs:
-            info = sf.info(str(wav))
-            dur = info.frames / info.samplerate
+            dur = None
+            sr = None
 
             if speaker in train_speakers:
-                train_selected.append((wav, dur, info.samplerate))
-                train_sec += dur
+                train_selected.append((wav, dur, sr))
             elif speaker in val_speakers:
-                val_selected.append((wav, dur, info.samplerate))
-                val_sec += dur
+                val_selected.append((wav, dur, sr))
 
     write_split(train_selected, out_root, split, mode)
 
