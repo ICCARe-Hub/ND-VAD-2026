@@ -214,13 +214,19 @@ class ResolutionMapDataset(Dataset):
             elif voice_activity_path.suffix == ".mat":
                 loaded_mat = loadmat(str(voice_activity_path))
                 raw_label = loaded_mat["y_label"].squeeze(axis=1).astype(np.long)
+
+                hop_samples = int(feature_extractor.config.transform.hop_ms / 1000 * audio_data.sample_rate)
+                label_indices = np.arange(0, len(raw_label), step=hop_samples)
+                labels = raw_label[label_indices]
+            
             else:
                 raise NotImplementedError
 
-            hop_samples = int(feature_extractor.config.transform.hop_ms / 1000 * audio_data.sample_rate)
-            label_indices = np.arange(0, len(raw_label), step=hop_samples)
-            labels = raw_label[label_indices]
-
+        assert feature.shape[0] == len(labels), (
+            f"Feature/label mismatch: features={feature.shape[0]}, "
+            f"labels={len(labels)} for {audio_path}"
+        )
+        
         return feature, labels
 
 
