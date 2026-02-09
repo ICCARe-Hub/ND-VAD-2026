@@ -38,7 +38,9 @@ def main():
     if not wavs:
         raise SystemExit(f"No .{args.ext} files found in {audio_dir}")
 
-    for wav_path in wavs:
+    total = len(wavs)
+
+    for idx, wav_path in enumerate(wavs, 1):
         rel = wav_path.relative_to(audio_dir)
         json_path = json_dir / rel.with_suffix(".json")
         npy_path = out_dir / rel.with_suffix(".npy")
@@ -87,6 +89,9 @@ def main():
         frame_labels = np.array(frames, dtype=np.int64)
 
         np.save(npy_path, frame_labels)
+        if idx % 500 == 0 or idx == total:
+          print(f"[{idx}/{total}] wrote {npy_path.name}")
+
 
     print(f"Done. Wrote .npy labels under: {out_dir}")
 
