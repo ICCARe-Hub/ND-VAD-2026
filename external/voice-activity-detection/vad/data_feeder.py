@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
+import time
 
 from torch.utils.data import DataLoader
 
@@ -53,7 +54,12 @@ class DataFeeder(Feeder):
             data_dir = Path(config.data_dir)
         else:
             data_dir = train_path.parent
+        
+        # sanity check
+        t0 = time.time()
+        print(f"[stage] Loading train jsonl: {train_path}", flush=True)
         train_data_list = VADDataList.load(train_path)
+        print(f"[stage] train jsonl loaded: {len(train_data_list.pairs)} pairs in {time.time()-t0:.2f}s", flush=True)
         if config.noise_injector is not None:
             noise_paths = load_noise_paths(
                 Path(config.noise_injector.noise_path),
@@ -106,7 +112,12 @@ class DataFeeder(Feeder):
             data_dir = Path(config.data_dir)
         else:
             data_dir = val_path.parent
+        t0 = time.time()
+        print(f"[stage] Loading val jsonl: {val_path}", flush=True)
         val_data_list = VADDataList.load(val_path)
+        print(f"[stage] val jsonl loaded: {len(val_data_list.pairs)} pairs in {time.time()-t0:.2f}s", flush=True)
+
+        print("[stage] Now building VAL dataset (audio loads)", flush=True)
         val_dataset = ResolutionMapDataset(
             data_pairs=val_data_list.pairs,
             data_dir=data_dir,

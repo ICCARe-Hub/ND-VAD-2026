@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from omegaconf import MISSING
@@ -19,12 +19,12 @@ class TrainConfig:
     data_dir: Optional[str] = None
     runs_dir: str = "results/runs"
     run_name: str = MISSING
-    context_resolution: ContextResolutionConfig = ContextResolutionConfig()
+    context_resolution: ContextResolutionConfig = field(default_factory=ContextResolutionConfig)
     dataset_chunk_size: Optional[int] = None
     noise_injector: Optional[NoiseInjectorConfig] = None
-    feature_extractor: FeatureExtractorConfig = FeatureExtractorConfig()
-    model: ModelConfig = ModelConfig()
-    optimizer: OptimizerConfig = OptimizerConfig()
+    feature_extractor: FeatureExtractorConfig = field(default_factory=FeatureExtractorConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     lr_scheduler: Optional[LRSchedulerConfig] = None
     gradient_clip_val: Optional[float] = None
     gradient_accumulation_steps: int = 1

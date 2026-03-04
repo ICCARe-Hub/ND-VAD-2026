@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +19,7 @@ from vad.data_models.audio_data import AudioData
 @dataclass
 class FeatureExtractorConfig:
     silence_remover: Optional[SilenceRemoverConfig] = None
-    transform: TransformConfig = TransformConfig()
+    transform: TransformConfig = field(default_factory=TransformConfig)
     spec_augment: Optional[SpecAugmentConfig] = None
     temporal_differences: bool = MISSING
     stack_differences: bool = MISSING

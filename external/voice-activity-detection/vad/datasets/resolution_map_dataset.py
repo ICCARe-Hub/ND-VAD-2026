@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import List, Optional
+import time
 
 import numpy as np
 import soundfile
@@ -208,8 +209,7 @@ class ResolutionMapDataset(Dataset):
             labels = voice_activity.to_labels(sample_rate=audio_data.sample_rate // hop_samples)
         else:
             if voice_activity_path.suffix == ".npy":
-                raw_label = np.load(voice_activity_path)
-                raw_label = raw_label.astype(np.int64)
+                labels = np.load(voice_activity_path).astype(np.int64)
 
             elif voice_activity_path.suffix == ".mat":
                 loaded_mat = loadmat(str(voice_activity_path))
