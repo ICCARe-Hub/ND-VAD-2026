@@ -18,6 +18,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+import json
 sys.path.append('../')
 warnings.filterwarnings('ignore')
 
@@ -29,6 +30,15 @@ from darts.cnn.utils import count_parameters_in_MB, save, AvgrageMeter, accuracy
 from darts.darts_config import *
 from misc.random_string import random_generator
 
+def read_manifest(jsonl_path):
+    spec_files = []
+    label_files = []
+    with open(jsonl_path, "r") as f:
+        for line in f:
+            row = json.loads(line)
+            spec_files.append(row["spec_path"])
+            label_files.append(row["label_path"])
+    return spec_files, label_files
 
 class Trainer:
     def __init__(self,
@@ -54,29 +64,65 @@ class Trainer:
         self.window = window
         self.test_data = test_dataset
 
-        min_size = 700      
+        min_size = 700
         train_path, valid_path = self.data_path.split(',')
 
         if self.mode == 'train':
-            train_label_files = sorted([os.path.join(train_path, f)
-                for f in os.listdir(train_path) if f.endswith('.npy') and 'spec' not in f \
-                and os.stat(os.path.join(train_path, f)).st_size > min_size])
-            random.shuffle(train_label_files)
-            train_files = [item.replace('.npy', '_spec.npy') for item in train_label_files]
-            train_dataset = VAD_Dataset(train_files, train_label_files,
-                             n_fft=400, n_mels=n_mels, sample_rate=16000, mode=self.mode, model_type=self.model_type)
-            print(len(train_label_files))
-        valid_label_files = sorted([ os.path.join(valid_path, f)
-            for f in os.listdir(valid_path) if f.endswith('.npy') and 'spec' not in f \
-             and os.stat(os.path.join(valid_path, f)).st_size > min_size])
+            if train_path.endswith(".jsonl"):
+                train_files, train_label_files = read_manifest(train_path)
+            else:
+                train_label_files = sorted([
+                    os.path.join(train_path, f)
+                    for f in os.listdir(train_path)
+                    if f.endswith('.npy') and 'spec' not in f
+                    and os.stat(os.path.join(train_path, f)).st_size > min_size
+                ])
+                random.shuffle(train_label_files)
+                train_files = [item.replace('.npy', '_spec.npy') for item in train_label_files]
 
-        valid_files = [item.replace('.npy', '_spec.npy') for item in valid_label_files]
-        if self.mode == 'train':
-            valid_dataset = VAD_Dataset(valid_files, valid_label_files, 
-                            n_fft=400, n_mels=n_mels, sample_rate=16000, model_type=self.model_type, mode='valid')
+            train_dataset = VAD_Dataset(
+                train_files,
+                train_label_files,
+                n_fft=400,
+                n_mels=n_mels,
+                sample_rate=16000,
+                mode=self.mode,
+                model_type=self.model_type
+            )
+            print(len(train_label_files))
+
+        if valid_path.endswith(".jsonl"):
+            valid_files, valid_label_files = read_manifest(valid_path)
         else:
-            valid_dataset = VAD_Dataset(valid_files, valid_label_files, 
-                            n_fft=400, n_mels=n_mels, sample_rate=16000, model_type=self.model_type, mode='test')
+            valid_label_files = sorted([
+                os.path.join(valid_path, f)
+                for f in os.listdir(valid_path)
+                if f.endswith('.npy') and 'spec' not in f
+                and os.stat(os.path.join(valid_path, f)).st_size > min_size
+            ])
+            valid_files = [item.replace('.npy', '_spec.npy') for item in valid_label_files]
+
+        if self.mode == 'train':
+            valid_dataset = VAD_Dataset(
+                valid_files,
+                valid_label_files,
+                n_fft=400,
+                n_mels=n_mels,
+                sample_rate=16000,
+                model_type=self.model_type,
+                mode='valid'
+            )
+        else:
+            valid_dataset = VAD_Dataset(
+                valid_files,
+                valid_label_files,
+                n_fft=400,
+                n_mels=n_mels,
+                sample_rate=16000,
+                model_type=self.model_type,
+                mode='test'
+            )         
+        
         if self.mode =='train':
             self.train_data = train_dataset
         self.valid_data = valid_dataset
