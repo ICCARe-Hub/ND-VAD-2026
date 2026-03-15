@@ -11,8 +11,13 @@ import torchvision.transforms as transforms
 import tqdm
 import warnings
 from glob import glob
-from sklearn.metrics import f1_score
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import (
+    f1_score,
+    roc_auc_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+)
 sys.path.append('../')
 warnings.filterwarnings('ignore')
 
@@ -45,6 +50,7 @@ class Trainer:
         self.epochs = epochs
         self.dataset_name = dataset
         self.save_path = model_save_path
+        os.makedirs(self.save_path, exist_ok=True)
         self.window = window
         self.test_data = test_dataset
 
@@ -92,7 +98,15 @@ class Trainer:
         early = 0
         best_single_valid = np.inf # the lower the better
 
+        print(f"Starting training for {self.epochs} epochs")
+        print(f"Train samples: {len(self.train_data)}")
+        print(f"Valid samples: {len(self.valid_data)}")
+        print(f"Batch size: {self.batch_size}")
+        print(f"Model: {self.model_type}")
+        print(f"Dataset: {self.dataset_name}")
+
         for e in range(self.epochs):
+            print(f"\nEpoch {e+1}/{self.epochs}")
             self.model.drop_path_prob = 0
             start = time.time()
 
@@ -101,16 +115,25 @@ class Trainer:
 
             if e == 0:
                 print(f'# params: {sum(p.numel() for p in self.model.parameters())}')
-
-            valid_auc, valid_obj, valid_loss = valid_step(
+            
+            valid_auc, valid_acc, valid_precision, valid_recall, valid_f1, valid_obj = valid_step(
                 valid_queue, self.model, criterion, self.dataset_name, self.model_type)
 
             scheduler.step()
+
+            print(
+                f"Epoch {e+1}/{self.epochs} | "
+                f"train_auc={train_auc:.4f} | train_loss={train_obj:.6f} | "
+                f"valid_auc={valid_auc:.4f} | valid_acc={valid_acc:.4f} | "
+                f"valid_precision={valid_precision:.4f} | valid_recall={valid_recall:.4f} | "
+                f"valid_f1={valid_f1:.4f} | valid_loss={valid_obj:.6f}"
+            )
 
             if best_single_valid > valid_obj:
                 best_single_valid = valid_obj
                 torch.save(self.model.state_dict(),
                            f'{self.save_path}/{e:03d}_{self.model_type}_{self.dataset_name}.pth')
+                print(f"Saved new best model at epoch {e+1} with valid_loss={valid_obj:.6f}")
                 early = 0
             else:
                 early += 1
@@ -127,9 +150,16 @@ class Trainer:
                 pin_memory=False, num_workers=0)
 
         start = time.time()
-        test_auc, test_f1, test_obj = test_step(
+
+        test_auc, test_acc, test_precision, test_recall, test_f1 = test_step(
             valid_queue, self.model, criterion, self.model_type, self.window)
-        print(f'Model:{self.model_type} train:{self.dataset_name}, test:{self.test_data}, test_auc:{test_auc}, test_f1:{test_f1}')
+
+        print(
+            f"Model:{self.model_type} | train:{self.dataset_name} | test:{self.test_data} | "
+            f"test_auc:{test_auc:.4f} | test_acc:{test_acc:.4f} | "
+            f"test_precision:{test_precision:.4f} | test_recall:{test_recall:.4f} | "
+            f"test_f1:{test_f1:.4f}"
+        )
 
 
 def train_step(train_queue, model, criterion, optimizer, model_type):
@@ -138,7 +168,7 @@ def train_step(train_queue, model, criterion, optimizer, model_type):
     model.train()
     device = 'cuda'
 
-    for step, (inputs, target) in tqdm.tqdm(enumerate(train_queue)):
+    for step, (inputs, target) in tqdm.tqdm(enumerate(train_queue), total=len(train_queue)):
         inputs = inputs.to(device)
         target = target.to(device)
         target = target.type(torch.float32)
@@ -158,6 +188,13 @@ def train_step(train_queue, model, criterion, optimizer, model_type):
         optimizer.step()
         n = inputs.size(0)
         objs.update(loss.item(), n)
+
+        if (step + 1) % 100 == 0 or (step + 1) == len(train_queue):
+          print(
+              f"[train] batch {step+1}/{len(train_queue)} | "
+              f"loss={loss.item():.6f} | "
+              f"inputs={tuple(inputs.shape)} | target={tuple(target.shape)}"
+          )
 
     preds = torch.cat(preds, dim=0).cpu()
     targets = torch.cat(targets, dim=0).cpu()
@@ -188,6 +225,14 @@ def valid_step(valid_queue, model, criterion, dataset, model_type):
                         loss = criterion(logits, target) + criterion(pipe, target) + 0.1*criterion(attn, target)
                     n = inputs.size(0)
                     objs.update(loss.item(), n)
+
+                    if (step + 1) % 100 == 0 or (step + 1) == len(valid_queue):
+                      print(
+                          f"[valid] batch {step+1}/{len(valid_queue)} | "
+                          f"loss={loss.item():.6f} | "
+                          f"inputs={tuple(inputs.shape)} | target={tuple(target.shape)}"
+                      )
+
                     preds.append(logits.view(-1).detach())
                     targets.append(target.view(-1).detach())
 
@@ -209,40 +254,70 @@ def valid_step(valid_queue, model, criterion, dataset, model_type):
             preds.append(logits.view(-1).detach())
             targets.append(target.view(-1).detach())
 
+            if (step + 1) % 100 == 0 or (step + 1) == len(valid_queue):
+                    print(
+                        f"[valid] batch {step+1}/{len(valid_queue)} | "
+                        f"loss={loss.item():.6f} | "
+                        f"inputs={tuple(inputs.shape)} | target={tuple(target.shape)}"
+                    )
+
     preds = torch.cat(preds, dim=0).cpu()
     targets = torch.cat(targets, dim=0).cpu()
 
     auc = roc_auc_score(targets, preds)
+
+    pred_labels = (preds >= 0.5).int()
+    true_labels = torch.round(targets).int()
+
+    acc = accuracy_score(true_labels, pred_labels)
+    precision = precision_score(true_labels, pred_labels, zero_division=0)
+    recall = recall_score(true_labels, pred_labels, zero_division=0)
+    f1 = f1_score(true_labels, pred_labels, zero_division=0)
+
     del preds, targets
 
-    return auc, objs.avg, loss
+    return auc, acc, precision, recall, f1, objs.avg
 
 
 def test_step(valid_queue, model, criterion, model_type, window):
-    objs = AvgrageMeter()
     preds, targets = [], []
     model.eval()
     batch_size = 512
     device = 'cuda'
+
     from tqdm import tqdm
-    for step, (inputs, target) in tqdm(enumerate(valid_queue)):
+
+    for step, (inputs, target) in tqdm(enumerate(valid_queue), total=len(valid_queue)):
         with torch.no_grad():
             inputs = inputs.to(device)
             target = target.to(device)
             target = target.type(torch.float32)
 
             logits = bdnn_ensemble_prediction(model, inputs, window, batch_size, model_type)
-            n = inputs.size(0)
+
             preds.append(logits.view(-1).detach())
             targets.append(target.view(-1).detach())
+
+            if (step + 1) % 100 == 0 or (step + 1) == len(valid_queue):
+                print(
+                    f"[test] batch {step+1}/{len(valid_queue)} | "
+                    f"inputs={tuple(inputs.shape)} | target={tuple(target.shape)}"
+                )
+
     preds = torch.cat(preds, dim=0).cpu()
     targets = torch.cat(targets, dim=0).cpu()
-    auc = roc_auc_score(torch.round(targets), preds)
-    f1 = f1_score(torch.round(targets), (preds >= 0.5)*1)
-    preds, targets = [], []
- 
+
+    true_labels = torch.round(targets).int()
+    pred_labels = (preds >= 0.5).int()
+
+    auc = roc_auc_score(true_labels, preds)
+    acc = accuracy_score(true_labels, pred_labels)
+    precision = precision_score(true_labels, pred_labels, zero_division=0)
+    recall = recall_score(true_labels, pred_labels, zero_division=0)
+    f1 = f1_score(true_labels, pred_labels, zero_division=0)
+
     del preds, targets
-    return auc, f1, objs.avg
+    return auc, acc, precision, recall, f1
 
 
 class VAD_Dataset(torch.utils.data.Dataset):
@@ -250,24 +325,51 @@ class VAD_Dataset(torch.utils.data.Dataset):
                  snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='Marblenet'):
         self.audio_files = audio_files
         self.label_files = label_files
-        self.audio_files = [torch.from_numpy(np.load(item)) for item in self.audio_files]
-        self.label_files = [torch.from_numpy(np.load(item)) for item in self.label_files]
         self.mode = mode
+
+        loaded_audio = []
+        loaded_labels = []
+
+        print(f"[{self.mode}] Loading {len(self.audio_files)} spectrogram files and labels...")
+
+        for i, (audio_path, label_path) in enumerate(zip(self.audio_files, self.label_files), 1):
+            audio_arr = np.load(audio_path)
+            label_arr = np.load(label_path)
+
+            loaded_audio.append(torch.from_numpy(audio_arr))
+            loaded_labels.append(torch.from_numpy(label_arr))
+
+            if i % 100 == 0 or i == len(self.audio_files):
+                print(
+                    f"[{self.mode}] Loaded {i}/{len(self.audio_files)} | "
+                    f"spec={os.path.basename(audio_path)} shape={audio_arr.shape} | "
+                    f"label={os.path.basename(label_path)} shape={label_arr.shape}"
+                )
+
+        self.audio_files = loaded_audio
+        self.label_files = loaded_labels
+
         self.n_voices = len(self.audio_files)
         self.n_fft = n_fft
         self.n_mels = n_mels
         self.window = torch.tensor(window)
         self.window -= self.window.min()
         self.sample_rate = sample_rate
-        self.melscale = torchaudio.functional.create_fb_matrix(
-            n_fft//2+1, 0, float(sample_rate//2), n_mels, sample_rate).cuda()
-
+        self.melscale = torchaudio.functional.melscale_fbanks(
+            n_freqs=n_fft // 2 + 1,
+            f_min=0.0,
+            f_max=float(sample_rate // 2),
+            n_mels=n_mels,
+            sample_rate=sample_rate,
+            norm=None,
+            mel_scale="htk",
+        ).cuda()
         self.n_frame = 63
         self.snr_low = snr_low
         self.snr_high = snr_high
         self.model_type = model_type
-        self.mask = torchaudio.transforms.FrequencyMasking(int(0.3*n_mels)).cuda()
- 
+        self.mask = torchaudio.transforms.FrequencyMasking(int(0.3 * n_mels)).cuda()
+         
     def __len__(self):
         return self.n_voices
 
@@ -282,6 +384,14 @@ class VAD_Dataset(torch.utils.data.Dataset):
         # label = torch.from_numpy(np.load(l_name)).cuda()
         label = l_name.cuda()
         label = label[:voice.size(1)]
+
+        if idx < 3:
+          print(
+              f"[{self.mode}] Sample check idx={idx} | "
+              f"voice_shape={tuple(voice.shape)} | "
+              f"label_shape={tuple(label.shape)}"
+          )
+
         assert label.shape[0] == voice.shape[1]
         if self.mode != 'test':
             voice, label = self.slice(voice, label)
@@ -403,7 +513,7 @@ def get_model(model_type, dataset_name, mode, n_mels, save_path):
                                     ('zero_original', 2), ('sep_conv_3x3_original', 4)],
                             reduce_concat=range(2, 6))
         model = NetworkVADOriginal(16, 8, genotype, use_second=False).cuda()
-    elif model_type in 'NewSearch':
+    elif model_type == 'NewSearch':
         genotype = Genotype(normal=[('MHA2D_F_4', 0), ('MBConv_5x5_x4', 1),
                                     ('MBConv_5x5_x4', 2), ('MHA2D_F_2', 0),
                                     ('SE_0.25', 2), ('MBConv_3x3_x4', 0)],
@@ -430,7 +540,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='train',
                         choices=['train', 'test'])
     parser.add_argument('--dataset', type=str, default='TIMIT',
-                        choices=['TIMIT', 'CV'])
+                        choices=['TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28'])
     parser.add_argument('--test_dataset', type=str, default='TIMIT')
     parser.add_argument('--save_path', type=str, default='./saved_model')
     parser.add_argument('--n_mels', type=int, default=80)
@@ -449,6 +559,9 @@ if __name__ == '__main__':
         'train': {
             'TIMIT': 'datasets/make_nasvad/train,datasets/make_nasvad/valid',
             'CV':    'datasets/make_nasvad/train,datasets/make_nasvad/valid',
+            'VOiCES': '../../datasets/VOICES_two/TRAIN,../../datasets/VOICES_two/VALID',
+            'MS-SNSD': '../../datasets/MS-SNSD_two/TRAIN,../../datasets/MS-SNSD_two/VALID',
+            'Voicebank28': '../../datasets/Voicebank28_two/TRAIN,../../datasets/Voicebank28_two/VALID',
         },
         'test': {
             'TIMIT': 'datasets/make_nasvad/train,datasets/make_nasvad/test',
@@ -459,7 +572,7 @@ if __name__ == '__main__':
     if args.mode =='train':
         trainer = Trainer(datapath_mapper[args.mode][args.dataset],
                           args.save_path,
-                          epochs=50 if args.dataset == 'CV' else 100,
+                          epochs=30,
                           **trainer_args)
         trainer.train()
     else:
@@ -468,4 +581,3 @@ if __name__ == '__main__':
             trainer = Trainer(datapath_mapper[args.mode][dataset],
                               args.save_path, epochs=None, **trainer_args)
             trainer.test()
-
