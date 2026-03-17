@@ -13,11 +13,24 @@ def accuracy_metric_tensor(targets, predictions):
 
 
 # Adapted from https://yangcha.github.io/EER-ROC/
+
 def equal_error_rate(y_true, y_score):
+    y_true = np.asarray(y_true).astype(np.int64)
+    y_score = np.asarray(y_score)
+
+    # Guard: EER undefined if only one class exists
+    uniq = np.unique(y_true)
+    if uniq.size < 2:
+        return float("nan")
+
     fpr, tpr, thresholds = roc_curve(y_true, y_score, pos_label=1)
-    eer = brentq(lambda x: 1 - x - interp1d(fpr, tpr)(x), 0, 1)
-    # threshold = interp1d(fpr, thresholds)(eer)
-    return eer
+
+    # Extra guard against NaNs/infs
+    if np.any(~np.isfinite(fpr)) or np.any(~np.isfinite(tpr)):
+        return float("nan")
+
+    # Solve for EER
+    return brentq(lambda x: 1 - x - interp1d(fpr, tpr)(x), 0.0, 1.0)
 
 
 def vad_accuracy(frames_true, frames_pred, L=5):

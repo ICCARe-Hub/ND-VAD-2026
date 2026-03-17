@@ -5,7 +5,13 @@ from typing import Any, Dict, List
 import numpy as np
 import torch
 from scipy.special import softmax
-from sklearn.metrics import precision_score, recall_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from torch import nn
 
 from vad.configs.train_config import TrainConfig
@@ -39,6 +45,30 @@ class ModelRunner(Runner):
         return {
             "loss": loss.mean(),
             "acc": accuracy,
+        }
+
+    def training_step(self, model: nn.Module, batch: Dict, info: TrainingInfo):
+        inputs, targets = batch
+        outputs = model(inputs["feature"])
+
+        loss = self.loss_function(outputs, targets)
+
+        predictions = outputs.argmax(dim=-1)
+        accuracy = accuracy_metric_tensor(targets, predictions)
+
+        probabilities = torch.nn.functional.softmax(outputs, dim=-1).view(-1, 2)[:, 1]
+        flat_targets = targets.view(-1).detach().cpu().numpy()
+        flat_probabilities = probabilities.detach().cpu().numpy()
+
+        try:
+            train_auc = roc_auc_score(flat_targets, flat_probabilities)
+        except ValueError:
+            train_auc = 0.0
+
+        return {
+            "loss": loss.mean(),
+            "acc": accuracy,
+            "train_auc": train_auc,
         }
 
     def validation_step(self, model: torch.nn.Module, batch: Dict, info: TrainingInfo):
@@ -76,21 +106,28 @@ class ModelRunner(Runner):
         probabilities = np.concatenate(
             [result.flatten() for result in val_results["probabilities"]]
         )
-        try:
+
+        if len(np.unique(labels)) < 2:
+            auc = 0.0
+        else:
             auc = roc_auc_score(labels, probabilities)
-        except ValueError:
-            auc = 0
 
         threshold = 0.5
-        precision = precision_score(labels, probabilities > threshold)
-        recall = recall_score(labels, probabilities > threshold)
+        pred_labels = (probabilities > threshold).astype(np.int32)
+        true_labels = labels.astype(np.int32)
+
+        precision = precision_score(true_labels, pred_labels, zero_division=0)
+        recall = recall_score(true_labels, pred_labels, zero_division=0)
+        f1 = f1_score(true_labels, pred_labels, zero_division=0)
 
         result = {
             "val_auc": auc,
             "val_accuracy": val_accuracy,
+            "val_acc": val_accuracy,
             "val_loss": val_loss,
             "val_precision": precision,
             "val_recall": recall,
+            "val_f1": f1,
         }
 
         val_data_lengths = {}
@@ -103,7 +140,7 @@ class ModelRunner(Runner):
         if self.config.model.name in ("bdnn", "acam", "self-attention"):
 
             boosted_metrics = collections.defaultdict(list)
-            for data_index, data_length in val_data_lengths.items():
+            for i, (data_index, data_length) in enumerate(val_data_lengths.items()):
                 label_length = (
                     data_length + 2 * self.config.context_resolution.context_window_half_frames
                 )
@@ -146,6 +183,15 @@ class ModelRunner(Runner):
                         "ignore",
                         message="No positive samples in y_true, true positive value should be meaningless",
                     )
+
+                    labels_np = np.asarray(total_labels).astype(np.int64)
+
+                    if i < 3:
+                        n_pos = int((labels_np == 1).sum())
+                        n_neg = int((labels_np == 0).sum())
+                        print(f"[val] item={i} label counts: pos={n_pos} neg={n_neg} total={labels_np.size}", flush=True)
+                        print(f"[val] item={i} unique labels: {np.unique(labels_np)}", flush=True)
+
                     eer = equal_error_rate(total_labels, boosted_predictions)
 
                 boosted_metrics["vacc"].append(vacc)
@@ -154,10 +200,10 @@ class ModelRunner(Runner):
                 boosted_metrics["bp"].append(bp)
                 boosted_metrics["eer"].append(eer)
 
-                try:
+                if len(np.unique(total_labels)) < 2:
+                    auc = 0.0
+                else:
                     auc = roc_auc_score(total_labels, boosted_probabilities[:, 1])
-                except ValueError:  # Only one class present in y_true. ROC AUC score is not defined in that case.
-                    auc = 0
 
                 boosted_metrics["auc"].append(auc)
 

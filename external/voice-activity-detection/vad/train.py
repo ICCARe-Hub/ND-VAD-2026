@@ -18,6 +18,10 @@ from vad.training.progress_bar import ProgressBar
 from vad.training.trainer import Trainer
 from vad.training.utils import find_next_version_dir
 from vad.util.seed import seed_everything
+import warnings
+from sklearn.exceptions import UndefinedMetricWarning
+
+warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 
 
 def train_vad_from_scratch(
@@ -68,7 +72,7 @@ def train_vad_from_scratch(
     model_checkpoint = ModelCheckpointer(
         checkpoints_dir=version_dir.joinpath("checkpoints"),
         monitor_metric="val_accuracy",
-        mode=MonitorMode.MIN,
+        mode=MonitorMode.MAX,
         top_k=1,
         save_last=True,
         period=1,
@@ -78,11 +82,18 @@ def train_vad_from_scratch(
     )
 
     progress_bar = ProgressBar(
-        train_monitor_metrics=["loss", "lr", "acc"],
-        val_monitor_metrics=["val_loss", "val_accuracy", "val_auc", "val_recall"],
-        version=version_dir.name,
-        refresh_rate=1,
-    )
+    train_monitor_metrics=["loss", "lr", "acc", "train_auc"],
+    val_monitor_metrics=[
+        "val_loss",
+        "val_accuracy",
+        "val_auc",
+        "val_precision",
+        "val_recall",
+        "val_f1",
+    ],
+    version=version_dir.name,
+    refresh_rate=1,
+)
 
     trainer = Trainer(
         logger=model_logger,

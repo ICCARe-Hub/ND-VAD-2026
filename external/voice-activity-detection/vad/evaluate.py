@@ -6,7 +6,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from tqdm import tqdm
 from typer import Option
 
@@ -62,17 +62,19 @@ def evaluate_vad_from_scratch(
         boosted_frame_probabilities = boosted_frame_probabilities[: len(true_labels)]
         boosted_frame_predictions = boosted_frame_probabilities > threshold
 
-        auc = roc_auc_score(true_labels, boosted_frame_probabilities)
-        accuracy = accuracy_score(true_labels, boosted_frame_predictions)
-        precision = precision_score(true_labels, boosted_frame_predictions)
-        recall = recall_score(true_labels, boosted_frame_predictions)
+        auc = roc_auc_score(true_labels, single_frame_probabilities)
+        accuracy = accuracy_score(true_labels, single_frame_predictions)
+        precision = precision_score(true_labels, single_frame_predictions, zero_division=0)
+        recall = recall_score(true_labels, single_frame_predictions, zero_division=0)
+        f1 = f1_score(true_labels, single_frame_predictions, zero_division=0)
         vacc, acc, sba, eba, bp = vad_accuracy(true_labels, single_frame_predictions)
         eer = equal_error_rate(true_labels, single_frame_predictions)
 
         boosted_auc = roc_auc_score(true_labels, boosted_frame_probabilities)
         boosted_accuracy = accuracy_score(true_labels, boosted_frame_predictions)
-        boosted_precision = precision_score(true_labels, boosted_frame_predictions)
-        boosted_recall = recall_score(true_labels, boosted_frame_predictions)
+        boosted_precision = precision_score(true_labels, boosted_frame_predictions, zero_division=0)
+        boosted_recall = recall_score(true_labels, boosted_frame_predictions, zero_division=0)
+        boosted_f1 = f1_score(true_labels, boosted_frame_predictions, zero_division=0)
 
         boosted_vacc, boosted_acc, boosted_sba, boosted_eba, boosted_bp = vad_accuracy(
             true_labels, boosted_frame_predictions
