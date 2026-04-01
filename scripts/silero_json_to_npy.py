@@ -3,6 +3,23 @@ import json
 from pathlib import Path
 import numpy as np
 import soundfile as sf
+from scipy.signal import fftconvolve as convolve
+
+# Builds frame labels closely related to NAS_VAD synthesize_audio.py pipeline (NOT used for the thesis project, but may be useful in later experimentations)
+def build_frame_labels(raw, sr, win_sec=0.025, hop_sec=0.010):
+    win = int(sr * win_sec)   # 400
+    hop = int(sr * hop_sec)   # 160
+
+    raw = np.asarray(raw).reshape(-1).astype(np.int64)
+
+    padded = np.concatenate([np.zeros(win - hop, dtype=np.int64), raw])
+    window = np.ones(win, dtype=np.int64)
+    conv = convolve(padded, window)
+
+    n_frames = int(np.floor(len(raw) / hop))
+    frame_labels = (conv[::hop][:n_frames] > (win // 2)).astype(np.int64)
+
+    return frame_labels, win, hop
 
 
 def iter_audio_files(audio_dir: Path, ext: str, recursive: bool):
@@ -58,7 +75,7 @@ def main():
 
         n = len(audio)
 
-        # Load silero segments (sample indices)
+        # Load silero segments (sample indices given in .json format)
         obj = json.loads(json_path.read_text())
         segs = obj.get("speech_segments", [])
         json_sr = obj.get("sampling_rate", None)
@@ -77,6 +94,7 @@ def main():
                 raw[s:e] = 1
 
         npy_path.parent.mkdir(parents=True, exist_ok=True)
+
         win = int(sr * 0.025)   # 25 ms = 400 samples
         hop = int(sr * 0.010)   # 10 ms = 160 samples
 
@@ -87,6 +105,8 @@ def main():
             frames.append(1 if chunk.mean() > 0.5 else 0)
 
         frame_labels = np.array(frames, dtype=np.int64)
+        
+        # frame_labels, win, hop = build_frame_labels(raw, sr)
 
         np.save(npy_path, frame_labels)
         if idx % 500 == 0 or idx == total:
