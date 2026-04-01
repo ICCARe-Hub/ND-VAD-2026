@@ -15,9 +15,7 @@ def iter_audio_files(audio_dir: Path, ext: str, recursive: bool):
 
 
 def load_audio_mono_16k(wav_path: Path, require_sr: int) -> torch.Tensor:
-    """
-    Load audio as mono float32 tensor of shape [num_samples].
-    """
+    # Load audio as mono (all audio was mono even before computing .npy arrays) float32 tensor of shape [num_samples].
     audio, sr = sf.read(wav_path, dtype="float32", always_2d=False)
 
     if sr != require_sr:
@@ -39,16 +37,16 @@ def align_spec_to_label(
     """
     Align spectrogram time frames to label length.
 
-    spec shape: [1, freq, time]
-    label_len: number of frame labels
-
-    Strategy:
     - if exact match: keep as-is
-    - if spec is longer by <= max_diff: trim right side
-    - if spec is shorter by <= max_diff: pad by repeating last frame
+    - if spec is longer by than max_diff, then trim right side
+    - if spec is shorter than max_diff, then pad by repeating last frame
     - otherwise: raise error
     """
+
+    # spec shape: [1, freq, time]
     spec_len = spec.shape[-1]
+
+    # label_len: number of frame labels
     diff = spec_len - label_len
 
     if diff == 0:
@@ -61,18 +59,17 @@ def align_spec_to_label(
         )
 
     if diff > 0:
-        # spec too long -> trim
+        # if spec too long, then trim
         return spec[..., :label_len]
 
-    # spec too short -> pad by repeating last frame
+    # if spec too short, then pad by repeating last frame
     pad_frames = label_len - spec_len
     last_frame = spec[..., -1:].repeat(1, 1, pad_frames)
     return torch.cat([spec, last_frame], dim=-1)
 
-
 def main():
     ap = argparse.ArgumentParser(
-        description="Generate NAS_VAD-compatible spectrogram .npy files from wavs."
+        description="Generate NAS_VAD repo-compatible spectrogram .npy files from wavs."
     )
     ap.add_argument("--audio_dir", required=True, type=Path, help="Directory containing source WAV files")
     ap.add_argument("--label_dir", required=True, type=Path, help="Directory containing frame-level .npy labels")
@@ -108,21 +105,13 @@ def main():
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Match repo-style preprocessing as closely as possible:
-    # - n_fft=400
-    # - hop_length=160
-    # - default Spectrogram behavior (power=2, center=True)
-    spec_transform = torchaudio.transforms.Spectrogram(
-        n_fft=args.n_fft,
-        hop_length=args.hop_length,
-    )
+    # Matching repo-style preprocessing as closely as possible (n_fft=400, hop_length=160, default spectrogram behavior (power=2, center=True)
 
     spec_transform = torchaudio.transforms.Spectrogram(
     n_fft=args.n_fft,
-    win_length=args.n_fft,
     hop_length=args.hop_length,
     center=False,
-)
+    )
 
     wavs = sorted(iter_audio_files(audio_dir, args.ext, args.recursive))
     if not wavs:
@@ -153,15 +142,15 @@ def main():
         # Load frame labels
         label = np.load(label_path)
         if label.ndim != 1:
-            raise ValueError(f"{label_path}: expected 1D frame labels, got shape {label.shape}")
+            raise ValueError(f"{label_path}: expected 1D frame labels, but got shape {label.shape}")
         label_len = int(label.shape[0])
 
         # Compute spectrogram
-        # Input audio: [num_samples]
-        # Output spec: [freq, time]
+        # Input audio -> [num_samples in .npy array]
+        # Output spec -> [freq, time]
         spec = spec_transform(audio)
 
-        # Save as [1, freq, time] to match repo README expectation
+        # save as [1, freq, time] to match NAS-VAD repo spectrogram processing
         spec = spec.unsqueeze(0)
 
         # Align to label frame count
@@ -183,12 +172,12 @@ def main():
             )
 
     print()
-    print("Done.")
-    print(f"Audio dir : {audio_dir}")
-    print(f"Label dir : {label_dir}")
+    print("Done")
+    print(f"Audio dir: {audio_dir}")
+    print(f"Label dir: {label_dir}")
     print(f"Output dir: {out_dir}")
-    print(f"Written   : {written}")
-    print(f"Skipped   : {skipped}")
+    print(f"Written: {written}")
+    print(f"Skipped: {skipped}")
 
 
 if __name__ == "__main__":
