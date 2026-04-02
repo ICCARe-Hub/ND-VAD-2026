@@ -30,6 +30,100 @@ from darts.cnn.utils import count_parameters_in_MB, save, AvgrageMeter, accuracy
 from darts.darts_config import *
 from misc.random_string import random_generator
 
+# VOiCES metrics heper functions
+def safe_auc(y_true, y_score):
+    y_true = np.asarray(y_true).reshape(-1)
+    y_score = np.asarray(y_score).reshape(-1)
+    if len(np.unique(y_true)) < 2:
+        return 0.0
+    return roc_auc_score(y_true, y_score)
+
+
+def compute_binary_metrics(preds, targets, threshold=0.5):
+    preds = np.asarray(preds).reshape(-1)
+    targets = np.asarray(targets).reshape(-1)
+
+    pred_labels = (preds >= threshold).astype(int)
+    true_labels = np.round(targets).astype(int)
+
+    auc = safe_auc(true_labels, preds)
+    acc = accuracy_score(true_labels, pred_labels)
+    precision = precision_score(true_labels, pred_labels, zero_division=0)
+    recall = recall_score(true_labels, pred_labels, zero_division=0)
+    f1 = f1_score(true_labels, pred_labels, zero_division=0)
+
+    tp = int(((pred_labels == 1) & (true_labels == 1)).sum())
+    tn = int(((pred_labels == 0) & (true_labels == 0)).sum())
+    fp = int(((pred_labels == 1) & (true_labels == 0)).sum())
+    fn = int(((pred_labels == 0) & (true_labels == 1)).sum())
+
+    miss_rate = fn / (tp + fn) if (tp + fn) > 0 else 0.0
+    false_alarm_rate = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+
+    return {
+        "auc": auc,
+        "acc": acc,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "miss_rate": miss_rate,
+        "false_alarm_rate": false_alarm_rate,
+        "tp": tp,
+        "tn": tn,
+        "fp": fp,
+        "fn": fn,
+    }
+
+
+def parse_voices_room_and_noise(filepath):
+    name = os.path.basename(filepath)
+
+    # noise type
+    if "-tele-" in name:
+        noise = "tele"
+    elif "-babb-" in name:
+        noise = "babb"
+    else:
+        noise = "unknown"
+
+    # room
+    room = "unknown"
+    parts = name.split("-")
+    for part in parts:
+        if part.startswith("rm"):
+            room = part
+            break
+
+    return room, noise
+
+# Voicebank metrics helper functions
+def load_voicebank_map(txt_path):
+    mapping = {}
+    with open(txt_path, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+            utt_id = parts[0]
+            noise = parts[1]
+            try:
+                snr = float(parts[2])
+            except ValueError:
+                continue
+            mapping[utt_id] = {"noise": noise, "snr": snr}
+    return mapping
+
+
+def parse_voicebank_utt_id(filepath):
+    name = os.path.basename(filepath)
+    name = name.replace("_spec.npy", "").replace(".npy", "")
+    return name
+
+
+def format_snr_key(snr):
+    # makes keys like snr_17.5, snr_12.5, etc.
+    return f"snr_{snr:g}"
+
 def read_manifest(jsonl_path):
     spec_files = []
     label_files = []
@@ -39,6 +133,35 @@ def read_manifest(jsonl_path):
             spec_files.append(row["spec_path"])
             label_files.append(row["label_path"])
     return spec_files, label_files
+
+# ONDRI
+def parse_ondri_metadata(filepath):
+
+    cohort = os.path.basename(os.path.dirname(filepath))
+
+    name = os.path.basename(filepath)
+    name = name.replace("_spec.npy", "").replace(".npy", "")
+
+    parts = name.split("_")
+
+    study_code = parts[0] if len(parts) > 0 else "unknown"
+    site_id = parts[1] if len(parts) > 1 else "unknown"
+    participant_id = parts[2] if len(parts) > 2 else "unknown"
+    timepoint = parts[3] if len(parts) > 3 else "unknown"
+
+    activity = "unknown"
+    if len(parts) > 4:
+        activity_part = parts[4]
+        activity = activity_part.split("-")[0]
+
+    return {
+        "cohort": cohort,
+        "study_code": study_code,
+        "site_id": site_id,
+        "participant_id": participant_id,
+        "timepoint": timepoint,
+        "activity": activity,
+    }
 
 class Trainer:
     def __init__(self,
@@ -94,12 +217,20 @@ class Trainer:
         if valid_path.endswith(".jsonl"):
             valid_files, valid_label_files = read_manifest(valid_path)
         else:
-            valid_label_files = sorted([
-                os.path.join(valid_path, f)
-                for f in os.listdir(valid_path)
-                if f.endswith('.npy') and 'spec' not in f
-                and os.stat(os.path.join(valid_path, f)).st_size > min_size
-            ])
+            if self.mode == 'test' and self.dataset_name == 'ONDRI-DDK':
+                valid_label_files = sorted([
+                    p for p in glob(os.path.join(valid_path, '**', '*.npy'), recursive=True)
+                    if 'spec' not in os.path.basename(p)
+                    and os.stat(p).st_size > min_size
+                ])
+            else:
+                valid_label_files = sorted([
+                    os.path.join(valid_path, f)
+                    for f in os.listdir(valid_path)
+                    if f.endswith('.npy') and 'spec' not in f
+                    and os.stat(os.path.join(valid_path, f)).st_size > min_size
+                ])
+
             valid_files = [item.replace('.npy', '_spec.npy') for item in valid_label_files]
 
         if self.mode == 'train':
@@ -197,8 +328,17 @@ class Trainer:
 
         start = time.time()
 
+        voicebank_map = None
+        if self.dataset_name == 'Voicebank28':
+            voicebank_map = load_voicebank_map('../../datasets/Voicebank28/log_testset.txt')
+
         test_auc, test_acc, test_precision, test_recall, test_f1 = test_step(
-            valid_queue, self.model, criterion, self.model_type, self.window)
+            valid_queue, self.model, criterion, self.model_type, self.window,
+            dataset_name=self.dataset_name,
+            voicebank_map=voicebank_map
+        )
+        
+        
 
         print(
             f"Model:{self.model_type} | train:{self.dataset_name} | test:{self.test_data} | "
@@ -324,7 +464,7 @@ def valid_step(valid_queue, model, criterion, dataset, model_type):
 
     return auc, acc, precision, recall, f1, objs.avg
 
-
+"""
 def test_step(valid_queue, model, criterion, model_type, window):
     preds, targets = [], []
     model.eval()
@@ -364,11 +504,221 @@ def test_step(valid_queue, model, criterion, model_type, window):
 
     del preds, targets
     return auc, acc, precision, recall, f1
+"""
+
+def test_step(valid_queue, model, criterion, model_type, window, dataset_name=None, voicebank_map=None):
+    preds, targets = [], []
+    model.eval()
+    batch_size = 512
+    device = 'cuda'
+
+    from tqdm import tqdm
+
+    # VOiCES grouped buckets
+    room_buckets = {}
+    room_noise_buckets = {}
+
+    # Voicebank grouped buckets
+    noise_buckets = {}
+    noise_snr_buckets = {}
+
+    # ONDRI grouped buckets
+    ondri_cohort_buckets = {}
+    ondri_cohort_timepoint_buckets = {}
+    ondri_cohort_timepoint_activity_buckets = {}
+
+    for step, batch in tqdm(enumerate(valid_queue), total=len(valid_queue)):
+        with torch.no_grad():
+            inputs, target, meta = batch
+
+            inputs = inputs.to(device)
+            target = target.to(device)
+            target = target.type(torch.float32)
+
+            logits = bdnn_ensemble_prediction(model, inputs, window, batch_size, model_type)
+
+            pred_np = logits.view(-1).detach().cpu().numpy()
+            target_np = target.view(-1).detach().cpu().numpy()
+
+            preds.append(pred_np)
+            targets.append(target_np)
+
+            # DataLoader batches dict values into lists
+            audio_path = meta["audio_path"][0]
+
+            if dataset_name == "VOiCES":
+                room, noise = parse_voices_room_and_noise(audio_path)
+
+                if room not in room_buckets:
+                    room_buckets[room] = {"preds": [], "targets": []}
+                room_buckets[room]["preds"].append(pred_np)
+                room_buckets[room]["targets"].append(target_np)
+
+                room_noise_key = (room, noise)
+                if room_noise_key not in room_noise_buckets:
+                    room_noise_buckets[room_noise_key] = {"preds": [], "targets": []}
+                room_noise_buckets[room_noise_key]["preds"].append(pred_np)
+                room_noise_buckets[room_noise_key]["targets"].append(target_np)
+
+            elif dataset_name == "Voicebank28" and voicebank_map is not None:
+                utt_id = parse_voicebank_utt_id(audio_path)
+                meta_info = voicebank_map.get(utt_id, {"noise": "unknown", "snr": None})
+                noise = meta_info["noise"]
+                snr = meta_info["snr"]
+
+                if noise not in noise_buckets:
+                    noise_buckets[noise] = {"preds": [], "targets": []}
+                noise_buckets[noise]["preds"].append(pred_np)
+                noise_buckets[noise]["targets"].append(target_np)
+
+                snr_key = format_snr_key(snr) if snr is not None else "snr_unknown"
+                noise_snr_key = (noise, snr_key)
+                
+                if noise_snr_key not in noise_snr_buckets:
+                    noise_snr_buckets[noise_snr_key] = {"preds": [], "targets": []}
+                noise_snr_buckets[noise_snr_key]["preds"].append(pred_np)
+                noise_snr_buckets[noise_snr_key]["targets"].append(target_np)
+
+            elif dataset_name == "ONDRI-DDK":
+                ondri = parse_ondri_metadata(audio_path)
+
+                cohort = ondri["cohort"]
+                timepoint = ondri["timepoint"]
+                activity = ondri["activity"]
+                
+                # per cohort
+                if cohort not in ondri_cohort_buckets:
+                    ondri_cohort_buckets[cohort] = {"preds": [], "targets": []}
+                ondri_cohort_buckets[cohort]["preds"].append(pred_np)
+                ondri_cohort_buckets[cohort]["targets"].append(target_np)
+
+                # per cohort + timepoint
+                cohort_timepoint_key = (cohort, timepoint)
+                if cohort_timepoint_key not in ondri_cohort_timepoint_buckets:
+                    ondri_cohort_timepoint_buckets[cohort_timepoint_key] = {"preds": [], "targets": []}
+                ondri_cohort_timepoint_buckets[cohort_timepoint_key]["preds"].append(pred_np)
+                ondri_cohort_timepoint_buckets[cohort_timepoint_key]["targets"].append(target_np)
+                
+                """
+                # per cohort + timepoint + activity
+                cohort_timepoint_activity_key = (cohort, timepoint, activity)
+                if cohort_timepoint_activity_key not in ondri_cohort_timepoint_activity_buckets:
+                    ondri_cohort_timepoint_activity_buckets[cohort_timepoint_activity_key] = {"preds": [], "targets": []}
+                ondri_cohort_timepoint_activity_buckets[cohort_timepoint_activity_key]["preds"].append(pred_np)
+                ondri_cohort_timepoint_activity_buckets[cohort_timepoint_activity_key]["targets"].append(target_np)
+                """
+                
+            extra = ""
+            if dataset_name == "VOiCES":
+                extra = f" room={room} | noise={noise}"
+            elif dataset_name == "Voicebank28" and voicebank_map is not None:
+                extra = f" noise={noise} | snr={snr}"
+            elif dataset_name == "ONDRI-DDK":
+                extra = f" cohort={cohort} | timepoint={timepoint} | activity={activity}"
+
+            if (step + 1) % 100 == 0 or (step + 1) == len(valid_queue):
+                print(
+                        f"[test] batch {step+1}/{len(valid_queue)} | "
+                        f"inputs={tuple(inputs.shape)} | target={tuple(target.shape)}"
+                        f"{extra}"
+                )
+
+    preds = np.concatenate(preds, axis=0)
+    targets = np.concatenate(targets, axis=0)
+
+    global_metrics = compute_binary_metrics(preds, targets)
+
+    print("\nGlobal Test Metrics")
+    print(
+        f"auc={global_metrics['auc']:.4f} | "
+        f"acc={global_metrics['acc']:.4f} | "
+        f"precision={global_metrics['precision']:.4f} | "
+        f"recall={global_metrics['recall']:.4f} | "
+        f"f1={global_metrics['f1']:.4f} | "
+        f"miss_rate={global_metrics['miss_rate']:.4f} | "
+        f"false_alarm_rate={global_metrics['false_alarm_rate']:.4f}"
+    )
+    print(
+        f"TP={global_metrics['tp']} | TN={global_metrics['tn']} | "
+        f"FP={global_metrics['fp']} | FN={global_metrics['fn']}"
+    )
+
+    if dataset_name == "Voicebank28":
+        print("\nNoise type + SNR type")
+        for noise, snr_key in sorted(noise_snr_buckets.keys()):
+            combo_preds = np.concatenate(noise_snr_buckets[(noise, snr_key)]["preds"], axis=0)
+            combo_targets = np.concatenate(noise_snr_buckets[(noise, snr_key)]["targets"], axis=0)
+            m = compute_binary_metrics(combo_preds, combo_targets)
+            print(
+                f"{noise} | {snr_key} | "
+                f"auc={m['auc']:.4f} | acc={m['acc']:.4f} | "
+                f"precision={m['precision']:.4f} | recall={m['recall']:.4f} | f1={m['f1']:.4f}"
+            )
+
+    elif dataset_name == 'VOiCES':
+        print("\n Room type + noise type")
+        for room, noise in sorted(room_noise_buckets.keys()):
+            combo_preds = np.concatenate(room_noise_buckets[(room, noise)]["preds"], axis=0)
+            combo_targets = np.concatenate(room_noise_buckets[(room, noise)]["targets"], axis=0)
+            m = compute_binary_metrics(combo_preds, combo_targets)
+            print(
+                f"{room} | {noise} | "
+                f"auc={m['auc']:.4f} | acc={m['acc']:.4f} | "
+                f"precision={m['precision']:.4f} | recall={m['recall']:.4f} | f1={m['f1']:.4f}"
+            )
+
+    elif dataset_name == "ONDRI-DDK":
+        """
+        print("\nPer cohort + timepoint + activity")
+        for cohort, timepoint, activity in sorted(ondri_cohort_timepoint_activity_buckets.keys()):
+            combo_preds = np.concatenate(
+                ondri_cohort_timepoint_activity_buckets[(cohort, timepoint, activity)]["preds"], axis=0
+            )
+            combo_targets = np.concatenate(
+                ondri_cohort_timepoint_activity_buckets[(cohort, timepoint, activity)]["targets"], axis=0
+            )
+            m = compute_binary_metrics(combo_preds, combo_targets)
+            print(
+                f"{cohort} | {timepoint} | {activity} | "
+                f"auc={m['auc']:.4f} | acc={m['acc']:.4f} | "
+                f"precision={m['precision']:.4f} | recall={m['recall']:.4f} | f1={m['f1']:.4f}"
+            )
+        """
+            
+        print("\nPer cohort + timepoint")
+        for (cohort, timepoint) in sorted(ondri_cohort_timepoint_buckets.keys()):
+            combo_preds = np.concatenate(
+                ondri_cohort_timepoint_buckets[(cohort, timepoint)]["preds"], axis=0
+            )
+            combo_targets = np.concatenate(
+                ondri_cohort_timepoint_buckets[(cohort, timepoint)]["targets"], axis=0
+            )
+            m = compute_binary_metrics(combo_preds, combo_targets)
+
+            print(
+                f"{cohort} | {timepoint} | "
+                f"auc={m['auc']:.4f} | acc={m['acc']:.4f} | "
+                f"precision={m['precision']:.4f} | recall={m['recall']:.4f} | "
+                f"f1={m['f1']:.4f} | miss_rate={m['miss_rate']:.4f} | "
+                f"false_alarm_rate={m['false_alarm_rate']:.4f}"
+            )
+
+
+    return (
+        global_metrics["auc"],
+        global_metrics["acc"],
+        global_metrics["precision"],
+        global_metrics["recall"],
+        global_metrics["f1"],
+    )
 
 
 class VAD_Dataset(torch.utils.data.Dataset):
     def __init__(self, audio_files, label_files, n_fft=400, n_mels=80, sample_rate=16000, mode='train',
                  snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='Marblenet'):
+
+        self.audio_paths = list(audio_files)
+        self.label_paths = list(label_files)
         self.audio_files = audio_files
         self.label_files = label_files
         self.mode = mode
@@ -459,6 +809,13 @@ class VAD_Dataset(torch.utils.data.Dataset):
         audio = torch.unsqueeze(audio, 0)
         audio = audio.to(torch.float32) # batch, winodw(time), freq
         
+        if self.mode == 'test':
+          meta = {
+                "audio_path": self.audio_paths[idx],
+                "label_path": self.label_paths[idx],
+          }
+          return audio, label, meta
+
         return audio, label
 
     def slice(self, spec, label=None):
@@ -586,7 +943,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='train',
                         choices=['train', 'test'])
     parser.add_argument('--dataset', type=str, default='TIMIT',
-                        choices=['TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28'])
+                        choices=['TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28', 'ONDRI-DDK', 'nasvad-subset', 'nasvad-subset10', 'nasvad-subset50', 'TRAIN', 'ONDRI-DDK-Old'])
     parser.add_argument('--test_dataset', type=str, default='TIMIT')
     parser.add_argument('--save_path', type=str, default='./saved_model')
     parser.add_argument('--n_mels', type=int, default=80)
@@ -607,11 +964,19 @@ if __name__ == '__main__':
             'CV':    'datasets/make_nasvad/train,datasets/make_nasvad/valid',
             'VOiCES': '../../datasets/VOICES_two/TRAIN,../../datasets/VOICES_two/VALID',
             'MS-SNSD': '../../datasets/MS-SNSD_two/TRAIN,../../datasets/MS-SNSD_two/VALID',
-            'Voicebank28': '../../datasets/Voicebank28_two/TRAIN,../../datasets/Voicebank28_two/VALID',
+            'Voicebank28': '../../datasets/nasvad_subsets/train_1pct.jsonl,../../datasets/nasvad_subsets/valid_full.jsonl',
+            'nasvad-subset': '../../datasets/nasvad_subsets/train_1pct.jsonl,../../datasets/nasvad_subsets/valid_full.jsonl',
+            'nasvad-subset10': '../../datasets/nasvad_subsets/train_10pct.jsonl,../../datasets/nasvad_subsets/valid_full.jsonl',
+            'nasvad-subset50': '../../datasets/nasvad_subsets/train_50pct.jsonl,../../datasets/nasvad_subsets/valid_full.jsonl',
+            'TRAIN': '/content/datasets/datasets/TRAIN,/content/datasets/datasets/VALID',
         },
         'test': {
             'TIMIT': 'datasets/make_nasvad/train,datasets/make_nasvad/test',
             'CV':    'datasets/make_nasvad/train,datasets/make_nasvad/test',
+            'VOiCES': '../../datasets/VOICES_two/TRAIN,../../datasets/VOiCES/test/TEST',
+            'Voicebank28': '../../datasets/Voicebank28_two/TRAIN,../../datasets/Voicebank28/test/TEST',
+            'ONDRI-DDK': '../../datasets/ONDRI_DDK_Data,/content/datasets/datasets/ONDRI_DDK_Test3',
+            'ONDRI-DDK-Old': '../../datasets/ONDRI_DDK_Data,../../datasets/ONDRI_DDK_Test',
         }
     }
 
@@ -622,8 +987,15 @@ if __name__ == '__main__':
                           **trainer_args)
         trainer.train()
     else:
+        """
         for dataset in sorted(datapath_mapper['test'].keys()):
             print(dataset)
             trainer = Trainer(datapath_mapper[args.mode][dataset],
                               args.save_path, epochs=None, **trainer_args)
             trainer.test()
+        """
+
+        print(args.dataset)
+        trainer = Trainer(datapath_mapper[args.mode][args.dataset],
+                            args.save_path, epochs=None, **trainer_args)
+        trainer.test()
