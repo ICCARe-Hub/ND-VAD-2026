@@ -16,11 +16,9 @@ TARGET_RMS_DB = -25
 def rms(x):
     return np.sqrt(np.mean(x ** 2))
 
-
 def normalize_to_db(x, target_db):
     scalar = 10 ** (target_db / 20) / (rms(x) + 1e-12)
     return x * scalar
-
 
 def snr_mixer(clean, noise, snr_db):
     clean = normalize_to_db(clean, TARGET_RMS_DB)
@@ -32,13 +30,11 @@ def snr_mixer(clean, noise, snr_db):
     noise = noise * noise_scalar
     return clean + noise
 
-
 def load_audio(path):
     audio, sr = sf.read(path)
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     return audio, sr
-
 
 def mix_split(clean_dir, out_dir, noise_files):
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -65,7 +61,6 @@ def mix_split(clean_dir, out_dir, noise_files):
             )
             sf.write(out_dir / out_name, noisy, sr)
 
-
 def main():
     assert NOISE_DIR.exists()
     noise_files = [
@@ -76,10 +71,10 @@ def main():
 
     print(f"Using {len(noise_files)} noise files")
 
-    print("Mixing TRAIN set...")
+    print("Mixing TRAIN set")
     mix_split(TRAIN_CLEAN, TRAIN_OUT, noise_files)
 
-    print("Mixing VAL set...")
+    print("Mixing VAL set")
     mix_split(VAL_CLEAN, VAL_OUT, noise_files)
 
     print("Done.")

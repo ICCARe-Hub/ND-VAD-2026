@@ -3,9 +3,6 @@ import shutil
 from pathlib import Path
 from collections import defaultdict
 
-# ========================
-# CONFIG (EDIT IF NEEDED)
-# ========================
 CLEAN_SRC = Path("external/MS-SNSD/clean_train")
 
 TRAIN_OUT = Path("datasets/MS-SNSD/train/clean")
@@ -14,14 +11,10 @@ VAL_OUT   = Path("datasets/MS-SNSD/val/clean")
 N_TOTAL_SPK = 28
 N_TRAIN_SPK = 26
 MODE = "copy"  # "copy" or "symlink"
-# ========================
 
 
 def get_speaker_id(wav_path: Path) -> str:
-    """
-    Extract speaker ID from VoiceBank-style filename.
-    Example: p226_001.wav -> p226
-    """
+    # Extract speaker ID from VoiceBank-style filename; ex: p226_001.wav -> p226
     return wav_path.stem.split("_")[0]
 
 
@@ -59,7 +52,7 @@ def main():
 
     selected_speakers = speakers[:N_TOTAL_SPK]
     train_speakers = set(selected_speakers[:N_TRAIN_SPK])
-    val_speakers   = set(selected_speakers[N_TRAIN_SPK:])
+    val_speakers = set(selected_speakers[N_TRAIN_SPK:])
 
     print(f"Total speakers selected: {len(selected_speakers)}")
     print(f"Train speakers: {len(train_speakers)}")
@@ -84,4 +77,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-  
