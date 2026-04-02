@@ -1,0 +1,10 @@
+numpy
+soundfile
+matplotlib
+pyyaml
+
+torch
+torchaudio
+
+tqdm
+librosa
