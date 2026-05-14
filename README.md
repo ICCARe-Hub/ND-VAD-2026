@@ -1,3 +1,4 @@
+# ND-VAD-2026 (Neurodegenerative Voice Activity Detection)
 # Cross-Domain Evaluation of Neural Network-Based Voice Activity Detection on Healthy and Neurodegenerative Speech
 
 This is a PyTorch-based framework for training and evaluating VAD models on noisy speech (MS-SNSD, VOiCES, Voicebank+DEMAND),
