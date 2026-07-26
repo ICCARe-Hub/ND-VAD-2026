@@ -136,7 +136,6 @@ def read_manifest(jsonl_path):
 
 # ONDRI
 def parse_ondri_metadata(filepath):
-
     cohort = os.path.basename(os.path.dirname(filepath))
 
     name = os.path.basename(filepath)
@@ -149,10 +148,19 @@ def parse_ondri_metadata(filepath):
     participant_id = parts[2] if len(parts) > 2 else "unknown"
     timepoint = parts[3] if len(parts) > 3 else "unknown"
 
-    activity = "unknown"
+    raw_activity = "unknown"
+
     if len(parts) > 4:
-        activity_part = parts[4]
-        activity = activity_part.split("-")[0]
+        raw_activity = parts[4].split("-")[0]
+
+    activity = raw_activity.lower()
+
+    if activity in {"puh", "tuh", "kuh"}:
+        task_type = "AMR"
+    elif activity in {"puhtuhkuh", "buttercup"}:
+        task_type = "SMR"
+    else:
+        task_type = "unknown"
 
     return {
         "cohort": cohort,
@@ -161,7 +169,40 @@ def parse_ondri_metadata(filepath):
         "participant_id": participant_id,
         "timepoint": timepoint,
         "activity": activity,
+        "task_type": task_type,
     }
+
+def add_to_metric_bucket(buckets, key, pred_np, target_np):
+    if key not in buckets:
+        buckets[key] = {
+            "preds": [],
+            "targets": [],
+            "n_files": 0,
+        }
+
+    buckets[key]["preds"].append(pred_np)
+    buckets[key]["targets"].append(target_np)
+    buckets[key]["n_files"] += 1
+
+
+def print_metric_bucket(label, bucket):
+    bucket_preds = np.concatenate(bucket["preds"], axis=0)
+    bucket_targets = np.concatenate(bucket["targets"], axis=0)
+
+    metrics = compute_binary_metrics(bucket_preds, bucket_targets)
+
+    print(
+        f"{label} | files={bucket['n_files']} | "
+        f"auc={metrics['auc']:.4f} | "
+        f"acc={metrics['acc']:.4f} | "
+        f"precision={metrics['precision']:.4f} | "
+        f"recall={metrics['recall']:.4f} | "
+        f"f1={metrics['f1']:.4f} | "
+        f"miss_rate={metrics['miss_rate']:.4f} | "
+        f"false_alarm_rate={metrics['false_alarm_rate']:.4f} | "
+        f"TP={metrics['tp']} | TN={metrics['tn']} | "
+        f"FP={metrics['fp']} | FN={metrics['fn']}"
+    )
 
 class Trainer:
     def __init__(self,
@@ -523,9 +564,15 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
     noise_snr_buckets = {}
 
     # ONDRI grouped buckets
+    #ondri_cohort_buckets = {}
+    #ondri_cohort_timepoint_buckets = {}
+    #ondri_cohort_timepoint_activity_buckets = {}
+
+    # ONDRI grouped buckets
     ondri_cohort_buckets = {}
-    ondri_cohort_timepoint_buckets = {}
-    ondri_cohort_timepoint_activity_buckets = {}
+    ondri_activity_buckets = {}
+    ondri_cohort_activity_buckets = {}
+    ondri_task_type_buckets = {}
 
     for step, batch in tqdm(enumerate(valid_queue), total=len(valid_queue)):
         with torch.no_grad():
@@ -583,38 +630,58 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
                 ondri = parse_ondri_metadata(audio_path)
 
                 cohort = ondri["cohort"]
-                timepoint = ondri["timepoint"]
                 activity = ondri["activity"]
-                
-                # per cohort
-                if cohort not in ondri_cohort_buckets:
-                    ondri_cohort_buckets[cohort] = {"preds": [], "targets": []}
-                ondri_cohort_buckets[cohort]["preds"].append(pred_np)
-                ondri_cohort_buckets[cohort]["targets"].append(target_np)
+                task_type = ondri["task_type"]
 
-                # per cohort + timepoint
-                cohort_timepoint_key = (cohort, timepoint)
-                if cohort_timepoint_key not in ondri_cohort_timepoint_buckets:
-                    ondri_cohort_timepoint_buckets[cohort_timepoint_key] = {"preds": [], "targets": []}
-                ondri_cohort_timepoint_buckets[cohort_timepoint_key]["preds"].append(pred_np)
-                ondri_cohort_timepoint_buckets[cohort_timepoint_key]["targets"].append(target_np)
-                
-                """
-                # per cohort + timepoint + activity
-                cohort_timepoint_activity_key = (cohort, timepoint, activity)
-                if cohort_timepoint_activity_key not in ondri_cohort_timepoint_activity_buckets:
-                    ondri_cohort_timepoint_activity_buckets[cohort_timepoint_activity_key] = {"preds": [], "targets": []}
-                ondri_cohort_timepoint_activity_buckets[cohort_timepoint_activity_key]["preds"].append(pred_np)
-                ondri_cohort_timepoint_activity_buckets[cohort_timepoint_activity_key]["targets"].append(target_np)
-                """
+                # Per cohort
+                add_to_metric_bucket(
+                    ondri_cohort_buckets,
+                    cohort,
+                    pred_np,
+                    target_np,
+                )
+
+                # Per activity
+                add_to_metric_bucket(
+                    ondri_activity_buckets,
+                    activity,
+                    pred_np,
+                    target_np,
+                )
+
+                # Per cohort + activity
+                add_to_metric_bucket(
+                    ondri_cohort_activity_buckets,
+                    (cohort, activity),
+                    pred_np,
+                    target_np,
+                )
+
+                # Combined AMR and SMR
+                add_to_metric_bucket(
+                    ondri_task_type_buckets,
+                    task_type,
+                    pred_np,
+                    target_np,
+                )
                 
             extra = ""
             if dataset_name == "VOiCES":
                 extra = f" room={room} | noise={noise}"
             elif dataset_name == "Voicebank28" and voicebank_map is not None:
                 extra = f" noise={noise} | snr={snr}"
+
+            elif dataset_name == "ONDRI-DDK":
+                extra = (
+                    f" cohort={cohort} | "
+                    f"activity={activity} | "
+                    f"task_type={task_type}"
+                )
+            
+            """
             elif dataset_name == "ONDRI-DDK":
                 extra = f" cohort={cohort} | timepoint={timepoint} | activity={activity}"
+            """
 
             if (step + 1) % 100 == 0 or (step + 1) == len(valid_queue):
                 print(
@@ -668,7 +735,66 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
             )
 
     elif dataset_name == "ONDRI-DDK":
+        cohort_order = ["ALS", "FTD", "PD", "VCI"]
+        activity_order = [
+            "puh",
+            "tuh",
+            "kuh",
+            "puhtuhkuh",
+            "buttercup",
+            "unknown",
+        ]
+        task_type_order = [
+            "AMR",
+            "SMR",
+            "unknown",
+        ]
+
+        print("\nPer cohort")
+        for cohort in cohort_order:
+            if cohort not in ondri_cohort_buckets:
+                continue
+
+            print_metric_bucket(
+                cohort,
+                ondri_cohort_buckets[cohort],
+            )
+
+        print("\nPer activity")
+        for activity in activity_order:
+            if activity not in ondri_activity_buckets:
+                continue
+
+            print_metric_bucket(
+                activity,
+                ondri_activity_buckets[activity],
+            )
+
+        print("\nCombined AMR and SMR")
+        for task_type in task_type_order:
+            if task_type not in ondri_task_type_buckets:
+                continue
+
+            print_metric_bucket(
+                task_type,
+                ondri_task_type_buckets[task_type],
+            )
+
+        print("\nPer cohort + activity")
+        for cohort in cohort_order:
+            for activity in activity_order:
+                key = (cohort, activity)
+
+                if key not in ondri_cohort_activity_buckets:
+                    continue
+
+                print_metric_bucket(
+                    f"{cohort} | {activity}",
+                    ondri_cohort_activity_buckets[key],
+                )
+
         """
+    elif dataset_name == "ONDRI-DDK":
         print("\nPer cohort + timepoint + activity")
         for cohort, timepoint, activity in sorted(ondri_cohort_timepoint_activity_buckets.keys()):
             combo_preds = np.concatenate(
@@ -683,7 +809,6 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
                 f"auc={m['auc']:.4f} | acc={m['acc']:.4f} | "
                 f"precision={m['precision']:.4f} | recall={m['recall']:.4f} | f1={m['f1']:.4f}"
             )
-        """
             
         print("\nPer cohort + timepoint")
         for (cohort, timepoint) in sorted(ondri_cohort_timepoint_buckets.keys()):
@@ -702,7 +827,7 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
                 f"f1={m['f1']:.4f} | miss_rate={m['miss_rate']:.4f} | "
                 f"false_alarm_rate={m['false_alarm_rate']:.4f}"
             )
-
+    """
 
     return (
         global_metrics["auc"],
@@ -945,6 +1070,8 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='TIMIT',
                         choices=['TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28', 'ONDRI-DDK', 'nasvad-subset', 'nasvad-subset10', 'nasvad-subset50', 'TRAIN', 'ONDRI-DDK-Old'])
     parser.add_argument('--test_dataset', type=str, default='TIMIT')
+    parser.add_argument('--test_path', type=str, default='/nfs/roberts/Humzah-Workspace/USRI_test/TEST', help='Optional ONDRI test directory containing cohort subfolders',
+    )
     parser.add_argument('--save_path', type=str, default='./saved_model')
     parser.add_argument('--n_mels', type=int, default=80)
  
@@ -975,7 +1102,7 @@ if __name__ == '__main__':
             'CV':    'datasets/make_nasvad/train,datasets/make_nasvad/test',
             'VOiCES': '../../datasets/VOICES_two/TRAIN,../../datasets/VOiCES/test/TEST',
             'Voicebank28': '../../datasets/Voicebank28_two/TRAIN,../../datasets/Voicebank28/test/TEST',
-            'ONDRI-DDK': '../../datasets/ONDRI_DDK_Data,/content/datasets/datasets/ONDRI_DDK_Test3',
+            'ONDRI-DDK': f'{args.test_path},{args.test_path}',
             'ONDRI-DDK-Old': '../../datasets/ONDRI_DDK_Data,../../datasets/ONDRI_DDK_Test',
         }
     }

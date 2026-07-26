@@ -193,10 +193,17 @@ def main():
         total_files += 1
 
         rel = wav_path.relative_to(audio_dir)
-        tg_path = textgrid_dir / rel.with_suffix(".textgrid")
-        npy_path = out_dir / rel.with_suffix(".npy")
+        tg_candidates = [
+            textgrid_dir/rel.with_suffix(".TextGrid"),
+            textgrid_dir/rel.with_suffix(".textgrid"),
+        ]
+        tg_path = next(
+            (candidate for candidate in tg_candidates if candidate.exists()),
+            None,
+        )
+        npy_path = out_dir/rel.with_suffix(".npy")
 
-        if not tg_path.exists():
+        if tg_path is None:
             print(f"[WARN] Missing TextGrid, skipping: {rel}")
             skipped_missing_tg += 1
             continue
