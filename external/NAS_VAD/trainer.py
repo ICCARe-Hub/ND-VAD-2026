@@ -212,7 +212,7 @@ class Trainer:
                  epochs=50,
                  mode='train',
                  model=None,
-                 model_type='Marblenet',
+                 model_type='NewSearch',
                  test_dataset = 'None',
                  window=[-19, -9, -1, 0, 1, 9, 19],
                  n_mels=80):
@@ -840,7 +840,7 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
 
 class VAD_Dataset(torch.utils.data.Dataset):
     def __init__(self, audio_files, label_files, n_fft=400, n_mels=80, sample_rate=16000, mode='train',
-                 snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='Marblenet'):
+                 snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='NewSearch'):
 
         self.audio_paths = list(audio_files)
         self.label_paths = list(label_files)
