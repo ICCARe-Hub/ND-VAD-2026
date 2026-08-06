@@ -1020,7 +1020,7 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type)
     return outputs / (total_counts + 1e-8)
 
 
-def get_model(model_type, dataset_name, mode, n_mels, save_path):
+def get_model(model_type, dataset_name, mode, n_mels, save_path, init_checkpoint=None):
     if model_type == 'BDNN':
         model = bDNN().cuda()
     elif model_type == 'ACAM':
@@ -1051,11 +1051,54 @@ def get_model(model_type, dataset_name, mode, n_mels, save_path):
                                     ('SE_0.25', 2), ('MBConv_3x3_x4', 0)],
                             reduce_concat=range(2, 5))
         model = NetworkVADv2(28, 4, genotype, False, 0, False, 7, n_mels).cuda()    
- 
-    if mode == 'test':
-        PATH = sorted(glob(os.path.join(save_path, '*.pth')))[-1]
-        model.load_state_dict(torch.load(PATH))
-        print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+    else:
+        raise ValueError(
+            f'Unsupported model type: {model_type}'
+        )
+
+    checkpoint_path = None
+
+    # New feature. Allows us to fine-tune by getting pre-trained weights by loading a specific checkpoint.
+    if init_checkpoint is not None:
+        checkpoint_path = init_checkpoint
+
+    # Preserves the existing testing behaviour; when no specific checkpoint is provided, uses the latest checkpoint found inside save_path.
+    elif mode == 'test':
+        checkpoint_candidates = sorted(glob(os.path.join(save_path, '*.pth')))
+
+        if not checkpoint_candidates:
+            raise FileNotFoundError(
+                f'No .pth checkpoints found in save_path: {save_path}'
+            )
+
+        checkpoint_path = checkpoint_candidates[-1]
+
+    if checkpoint_path is not None:
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f'Checkpoint file not found: {checkpoint_path}')
+
+        state_dict = torch.load(
+            checkpoint_path,
+            map_location='cuda',
+        )
+
+        model.load_state_dict(
+            state_dict,
+            strict=True,
+        )
+
+        print(f'{checkpoint_path}')
+        print(
+            f'Trainable parameters: '
+            f'{sum(p.numel() for p in model.parameters() if p.requires_grad)}'
+        )
+
+    else:
+        print(
+            f'No initialization checkpoint supplied. '
+            f'{model_type} will use newly initialized weights.'
+        )
 
     return model
 
@@ -1064,7 +1107,7 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default='Marblenet')
+    parser.add_argument('--model', type=str, default='NewSearch')
     parser.add_argument('--mode', type=str, default='train',
                         choices=['train', 'test'])
     parser.add_argument('--dataset', type=str, default='TIMIT',
@@ -1073,11 +1116,12 @@ if __name__ == '__main__':
     parser.add_argument('--test_path', type=str, default='/nfs/roberts/Humzah-Workspace/USRI_test/TEST', help='Optional ONDRI test directory containing cohort subfolders',
     )
     parser.add_argument('--save_path', type=str, default='./saved_model')
+    parser.add_argument('--init_checkpoint',type=str,default=None,help=('Optional .pth checkpoint used to initialize the model and allow for model fine-tuning during training. '),)
     parser.add_argument('--n_mels', type=int, default=80)
  
     args = parser.parse_args()
 
-    model = get_model(args.model, args.dataset, args.mode, args.n_mels, args.save_path)
+    model = get_model(args.model, args.dataset, args.mode, args.n_mels, args.save_path, args.init_checkpoint)
 
     trainer_args = {'dataset': args.dataset,
                     'test_dataset': args.test_dataset,
@@ -1086,6 +1130,7 @@ if __name__ == '__main__':
                     'model_type': args.model, 'model': model,
                     'n_mels': args.n_mels}
     datapath_mapper = {
+        # Add mapping for ONDRI fine-tuning dataset (About 512 participants; Confirm if DDK files only or narrative files as well; Need to create using Silero)
         'train': {
             'TIMIT': 'datasets/make_nasvad/train,datasets/make_nasvad/valid',
             'CV':    'datasets/make_nasvad/train,datasets/make_nasvad/valid',
