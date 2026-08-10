@@ -1111,7 +1111,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='train',
                         choices=['train', 'test'])
     parser.add_argument('--dataset', type=str, default='TIMIT',
-                        choices=['TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28', 'ONDRI-DDK', 'nasvad-subset', 'nasvad-subset10', 'nasvad-subset50', 'TRAIN', 'ONDRI-DDK-Old'])
+                        choices=['ONDRI-SILERO', 'TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28', 'ONDRI-DDK', 'nasvad-subset', 'nasvad-subset10', 'nasvad-subset50', 'TRAIN', 'ONDRI-DDK-Old'])
     parser.add_argument('--test_dataset', type=str, default='TIMIT')
     parser.add_argument('--test_path', type=str, default='/nfs/roberts/Humzah-Workspace/USRI_test/TEST', help='Optional ONDRI test directory containing cohort subfolders',
     )
@@ -1132,6 +1132,7 @@ if __name__ == '__main__':
     datapath_mapper = {
         # Add mapping for ONDRI fine-tuning dataset (About 512 participants; Confirm if DDK files only or narrative files as well; Need to create using Silero)
         'train': {
+            'ONDRI-SILERO': '../../datasets/ondri_silero_train,../../datasets/ondri_silero_valid',
             'TIMIT': 'datasets/make_nasvad/train,datasets/make_nasvad/valid',
             'CV':    'datasets/make_nasvad/train,datasets/make_nasvad/valid',
             'VOiCES': '../../datasets/VOICES_two/TRAIN,../../datasets/VOICES_two/VALID',

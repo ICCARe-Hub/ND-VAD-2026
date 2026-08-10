@@ -18,6 +18,12 @@ datasets/VOiCES/*
 !datasets/VOiCES/_cfg/
 !datasets/VOiCES/_cfg/**
 
+#SLURM scripts
+scripts/slurm_scripts/
+
+#SLURM logs
+logs/
+
 # C extensions
 *.so
 
@@ -220,3 +226,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+/datasets/ondri_silero/
