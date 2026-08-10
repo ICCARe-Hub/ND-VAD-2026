@@ -148,6 +148,19 @@ def parse_ondri_metadata(filepath):
     participant_id = parts[2] if len(parts) > 2 else "unknown"
     timepoint = parts[3] if len(parts) > 3 else "unknown"
 
+    cohort_map = {
+        "1": "ADMCI",
+        "2": "ALS",
+        "3": "FTD",
+        "4": "PD",
+        "5": "VCI",
+    }
+
+    if participant_id != "unknown" and participant_id:
+        cohort = cohort_map.get(participant_id[0], "unknown")
+    else:
+        cohort = "unknown"
+
     raw_activity = "unknown"
 
     if len(parts) > 4:
@@ -159,6 +172,8 @@ def parse_ondri_metadata(filepath):
         task_type = "AMR"
     elif activity in {"puhtuhkuh", "buttercup"}:
         task_type = "SMR"
+    elif activity in {"seqstort1", "seqstort2a"}:
+        task_type = "NARRATIVE"
     else:
         task_type = "unknown"
 
@@ -258,7 +273,7 @@ class Trainer:
         if valid_path.endswith(".jsonl"):
             valid_files, valid_label_files = read_manifest(valid_path)
         else:
-            if self.mode == 'test' and self.dataset_name == 'ONDRI-DDK':
+            if self.mode == 'test' and self.dataset_name in {'ONDRI-DDK','ONDRI-NARRATIVE'}:
                 valid_label_files = sorted([
                     p for p in glob(os.path.join(valid_path, '**', '*.npy'), recursive=True)
                     if 'spec' not in os.path.basename(p)
@@ -626,7 +641,7 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
                 noise_snr_buckets[noise_snr_key]["preds"].append(pred_np)
                 noise_snr_buckets[noise_snr_key]["targets"].append(target_np)
 
-            elif dataset_name == "ONDRI-DDK":
+            elif dataset_name in {"ONDRI-DDK", "ONDRI-NARRATIVE"}:
                 ondri = parse_ondri_metadata(audio_path)
 
                 cohort = ondri["cohort"]
@@ -671,7 +686,7 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
             elif dataset_name == "Voicebank28" and voicebank_map is not None:
                 extra = f" noise={noise} | snr={snr}"
 
-            elif dataset_name == "ONDRI-DDK":
+            elif dataset_name in {"ONDRI-DDK", "ONDRI-NARRATIVE"}:
                 extra = (
                     f" cohort={cohort} | "
                     f"activity={activity} | "
@@ -793,6 +808,53 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
                     ondri_cohort_activity_buckets[key],
                 )
 
+    elif dataset_name == "ONDRI-NARRATIVE":
+        cohort_order = [
+            "ADMCI",
+            "ALS",
+            "FTD",
+            "PD",
+            "VCI",
+        ]
+    
+        activity_order = [
+            "seqstort1",
+            "seqstort2a",
+        ]
+    
+        print("\nPer cohort")
+        for cohort in cohort_order:
+            if cohort not in ondri_cohort_buckets:
+                continue
+    
+            print_metric_bucket(
+                cohort,
+                ondri_cohort_buckets[cohort],
+            )
+    
+        print("\nPer activity")
+        for activity in activity_order:
+            if activity not in ondri_activity_buckets:
+                continue
+    
+            print_metric_bucket(
+                activity,
+                ondri_activity_buckets[activity],
+            )
+    
+        print("\nPer cohort + activity")
+        for cohort in cohort_order:
+            for activity in activity_order:
+                key = (cohort, activity)
+    
+                if key not in ondri_cohort_activity_buckets:
+                    continue
+    
+                print_metric_bucket(
+                    f"{cohort} | {activity}",
+                    ondri_cohort_activity_buckets[key],
+                )
+    
         """
     elif dataset_name == "ONDRI-DDK":
         print("\nPer cohort + timepoint + activity")
@@ -1111,9 +1173,9 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='train',
                         choices=['train', 'test'])
     parser.add_argument('--dataset', type=str, default='TIMIT',
-                        choices=['ONDRI-SILERO', 'TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28', 'ONDRI-DDK', 'nasvad-subset', 'nasvad-subset10', 'nasvad-subset50', 'TRAIN', 'ONDRI-DDK-Old'])
+                        choices=['ONDRI-SILERO', 'ONDRI-NARRATIVE', 'TIMIT', 'CV', 'VOiCES', 'MS-SNSD', 'Voicebank28', 'ONDRI-DDK', 'nasvad-subset', 'nasvad-subset10', 'nasvad-subset50', 'TRAIN', 'ONDRI-DDK-Old'])
     parser.add_argument('--test_dataset', type=str, default='TIMIT')
-    parser.add_argument('--test_path', type=str, default='/nfs/roberts/Humzah-Workspace/USRI_test/TEST', help='Optional ONDRI test directory containing cohort subfolders',
+    parser.add_argument('--test_path', type=str, default='/nfs/roberts/Humzah-Workspace/USRI_test/TEST', help='Path to the ONDRI test dataset',
     )
     parser.add_argument('--save_path', type=str, default='./saved_model')
     parser.add_argument('--init_checkpoint',type=str,default=None,help=('Optional .pth checkpoint used to initialize the model and allow for model fine-tuning during training. '),)
@@ -1150,6 +1212,7 @@ if __name__ == '__main__':
             'Voicebank28': '../../datasets/Voicebank28_two/TRAIN,../../datasets/Voicebank28/test/TEST',
             'ONDRI-DDK': f'{args.test_path},{args.test_path}',
             'ONDRI-DDK-Old': '../../datasets/ONDRI_DDK_Data,../../datasets/ONDRI_DDK_Test',
+            'ONDRI-NARRATIVE': f'{args.test_path},{args.test_path}',
         }
     }
 
