@@ -15,6 +15,7 @@ def open_textgrid_safe(path):
             continue
     raise RuntimeError(f"Could not decode TextGrid: {path}")
 
+"""
 def parse_textgrid_intervals(textgrid_path, target_tier_index=2):
     intervals = []
 
@@ -52,6 +53,72 @@ def parse_textgrid_intervals(textgrid_path, target_tier_index=2):
 
                 if xmin is not None and xmax is not None:
                     intervals.append((xmin, xmax, is_speech, text))
+
+                xmin = None
+                xmax = None
+
+    return intervals
+"""
+
+def parse_textgrid_intervals(
+    textgrid_path,
+    target_tier_index=1,
+    speech_mode="word_nonword",
+):
+    intervals = []
+
+    current_tier_index = 0
+    xmin = None
+    xmax = None
+    in_target_tier = False
+
+    with open_textgrid_safe(textgrid_path) as f:
+        for line in f:
+            line = line.strip()
+
+            # Count only real numbered tiers: item [1]:, item [2]:, and so on
+            if re.match(r"item \[\d+\]:", line):
+                current_tier_index += 1
+                in_target_tier = (current_tier_index == target_tier_index)
+                xmin = None
+                xmax = None
+                continue
+
+            if not in_target_tier:
+                continue
+
+            if line.startswith("xmin ="):
+                xmin = float(line.split("=", 1)[1].strip())
+
+            elif line.startswith("xmax ="):
+                xmax = float(line.split("=", 1)[1].strip())
+
+            elif line.startswith("text ="):
+                m = re.search(r'"(.*)"', line)
+                text = m.group(1).strip() if m else ""
+
+                # Mode 1
+                # Collect timestamps from the file that have only the $word and $non-word annotations
+                if speech_mode == "word_nonword":
+                    is_speech = text in {
+                        "$word",
+                        "$non-word",
+                    }
+
+                # Mode 2
+                # Collect timestamps from the file that have all '$' annotationss
+                elif speech_mode == "all_annotated":
+                    is_speech = text.startswith("$")
+
+                else:
+                    raise ValueError(
+                        f"Unknown speech_mode: {speech_mode}"
+                    )
+
+                if xmin is not None and xmax is not None:
+                    intervals.append(
+                        (xmin, xmax, is_speech, text)
+                    )
 
                 xmin = None
                 xmax = None
@@ -158,6 +225,7 @@ def sanity_check_file(rel, intervals, raw, frame_labels, n_samples, sr, win, hop
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--speech_mode",choices=["word_nonword","all_annotated",], default="word_nonword",help=("word_nonword: only $word and $non-word are speech; ""all_annotated: every annotation beginning with $ is speech"))
     ap.add_argument("--audio_dir", required=True, type=Path)
     ap.add_argument("--textgrid_dir", required=True, type=Path)
     ap.add_argument("--out_dir", required=True, type=Path)
@@ -165,7 +233,7 @@ def main():
     ap.add_argument("--recursive", action="store_true")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--require_sr", type=int, default=16000)
-    ap.add_argument("--target_tier_index", type=int, default=2)
+    ap.add_argument("--target_tier_index", type=int, default=1)
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -221,7 +289,8 @@ def main():
 
         intervals = parse_textgrid_intervals(
             tg_path,
-            target_tier_index=args.target_tier_index
+            target_tier_index=args.target_tier_index,
+            speech_mode=args.speech_mode,
         )
 
         raw = build_sample_labels(intervals, sr, n_samples)
@@ -257,6 +326,7 @@ def main():
             f"mean={arr.mean():.4f} | max={arr.max():.4f}"
         )
 
+    print(f"Speech mode: {args.speech_mode}")
     print(f"Wrote .npy labels under: {out_dir}")
 
 
