@@ -109,6 +109,9 @@ def parse_textgrid_intervals(
                 # Collect timestamps from the file that have all '$' annotationss
                 elif speech_mode == "all_annotated":
                     is_speech = text.startswith("$")
+                
+                elif speech_mode == "nonempty":
+                    is_speech = (text != "")
 
                 else:
                     raise ValueError(
@@ -225,7 +228,7 @@ def sanity_check_file(rel, intervals, raw, frame_labels, n_samples, sr, win, hop
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--speech_mode",choices=["word_nonword","all_annotated",], default="word_nonword",help=("word_nonword: only $word and $non-word are speech; ""all_annotated: every annotation beginning with $ is speech"))
+    ap.add_argument("--speech_mode",choices=["word_nonword","all_annotated","nonempty"], default="word_nonword",help=("word_nonword: only $word and $non-word are speech; ""all_annotated: every annotation beginning with $ is speech"))
     ap.add_argument("--audio_dir", required=True, type=Path)
     ap.add_argument("--textgrid_dir", required=True, type=Path)
     ap.add_argument("--out_dir", required=True, type=Path)
