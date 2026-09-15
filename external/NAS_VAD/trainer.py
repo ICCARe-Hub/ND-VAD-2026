@@ -11,8 +11,10 @@ import torchvision.transforms as transforms
 import tqdm
 import warnings
 from glob import glob
+import torch.nn.functional as Fs
 from sklearn.metrics import (
     f1_score,
+    fbeta_score,
     roc_auc_score,
     accuracy_score,
     precision_score,
@@ -51,6 +53,7 @@ def compute_binary_metrics(preds, targets, threshold=0.5):
     precision = precision_score(true_labels, pred_labels, zero_division=0)
     recall = recall_score(true_labels, pred_labels, zero_division=0)
     f1 = f1_score(true_labels, pred_labels, zero_division=0)
+    f2 = fbeta_score(true_labels, pred_labels, beta=2, zero_division=0)
 
     tp = int(((pred_labels == 1) & (true_labels == 1)).sum())
     tn = int(((pred_labels == 0) & (true_labels == 0)).sum())
@@ -66,6 +69,7 @@ def compute_binary_metrics(preds, targets, threshold=0.5):
         "precision": precision,
         "recall": recall,
         "f1": f1,
+        "f2": f2,
         "miss_rate": miss_rate,
         "false_alarm_rate": false_alarm_rate,
         "tp": tp,
@@ -73,6 +77,94 @@ def compute_binary_metrics(preds, targets, threshold=0.5):
         "fp": fp,
         "fn": fn,
     }
+
+class BinaryFocalLoss(nn.Module):
+    def __init__(self, gamma=2.0):
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(self, preds, targets):
+        preds = torch.clamp(preds, min=1e-7, max=1.0 - 1e-7)
+
+        bce = F.binary_cross_entropy(
+            preds,
+            targets,
+            reduction="none",
+        )
+
+        pt = torch.where(targets >= 0.5, preds, 1.0 - preds)
+
+        focal_weight = (1.0 - pt) ** self.gamma
+
+        return (focal_weight * bce).mean()
+
+
+class WeightedBCELoss(nn.Module):
+    def __init__(self, negative_weight, positive_weight):
+        super().__init__()
+        self.negative_weight = negative_weight
+        self.positive_weight = positive_weight
+
+    def forward(self, preds, targets):
+        weights = torch.where(
+            targets >= 0.5,
+            torch.full_like(targets, self.positive_weight),
+            torch.full_like(targets, self.negative_weight),
+        )
+
+        return F.binary_cross_entropy(
+            preds,
+            targets,
+            weight=weights,
+        )
+
+
+def compute_balanced_class_weights(label_tensors):
+    positive = 0
+    total = 0
+
+    for labels in label_tensors:
+        labels = labels.reshape(-1)
+        positive += int((labels >= 0.5).sum().item())
+        total += labels.numel()
+
+    negative = total - positive
+
+    if positive == 0 or negative == 0:
+        raise ValueError("weighted BCE requires both positive and negative training labels")
+
+    positive_weight = total/(2.0 * positive)
+    negative_weight = total/(2.0 * negative)
+
+    return negative_weight, positive_weight
+
+
+def build_loss(loss_type, train_label_tensors):
+    if loss_type == "bce":
+        return nn.BCELoss()
+
+    if loss_type == "weighted_bce":
+        negative_weight, positive_weight = compute_balanced_class_weights(train_label_tensors)
+
+        print(
+            f"Weighted BCE | "
+            f"negative_weight={negative_weight:.6f} | "
+            f"positive_weight={positive_weight:.6f}"
+        )
+
+        return WeightedBCELoss(
+            negative_weight=negative_weight,
+            positive_weight=positive_weight,
+        )
+
+    if loss_type == "focal":
+        return BinaryFocalLoss(
+            gamma=2.0,
+        )
+
+    raise ValueError(
+        f"Unsupported loss type: {loss_type}"
+    )
 
 
 def parse_voices_room_and_noise(filepath):
@@ -213,6 +305,7 @@ def print_metric_bucket(label, bucket):
         f"precision={metrics['precision']:.4f} | "
         f"recall={metrics['recall']:.4f} | "
         f"f1={metrics['f1']:.4f} | "
+        f"f2={metrics['f2']:.4f} | "
         f"miss_rate={metrics['miss_rate']:.4f} | "
         f"false_alarm_rate={metrics['false_alarm_rate']:.4f} | "
         f"TP={metrics['tp']} | TN={metrics['tn']} | "
@@ -230,9 +323,23 @@ class Trainer:
                  model_type='NewSearch',
                  test_dataset = 'None',
                  window=[-19, -9, -1, 0, 1, 9, 19],
-                 n_mels=80):
+                 n_mels=80,
+                 batch_size=128,
+                 learning_rate=1e-3,
+                 weight_decay=0.0,
+                 loss_type="bce",
+                 patience=10,
+                 grad_clip=GRAD_CLIP,
+                 drop_path=0.0,
+                 ):
         self.data_path = data_path
-        self.batch_size = 128
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.loss_type = loss_type
+        self.patience = patience
+        self.grad_clip = grad_clip
+        self.drop_path = drop_path
         self.mode = mode
         self.model = model
         self.model_type = model_type
@@ -315,6 +422,205 @@ class Trainer:
         self.valid_data = valid_dataset
 
     def train(self):
+        criterion = build_loss(
+            self.loss_type,
+            self.train_data.label_files,
+        ).cuda()
+
+        optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
+
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            self.epochs,
+            eta_min=1e-6,
+        )
+
+        train_queue = torch.utils.data.DataLoader(
+            self.train_data,
+            batch_size=self.batch_size,
+            pin_memory=False,
+            num_workers=0,
+            shuffle=True,
+        )
+
+        valid_queue = torch.utils.data.DataLoader(
+            self.valid_data,
+            batch_size=self.batch_size,
+            pin_memory=False,
+            num_workers=0,
+        )
+
+        early = 0
+        best_valid_f2 = -np.inf
+        best_checkpoint = None
+        best_epoch = None
+        best_metrics = None
+
+        print(f"Starting training for {self.epochs} epochs")
+        print(f"Train samples: {len(self.train_data)}")
+        print(f"Valid samples: {len(self.valid_data)}")
+        print(f"Batch size: {self.batch_size}")
+        print(f"Learning rate: {self.learning_rate}")
+        print(f"Weight decay: {self.weight_decay}")
+        print(f"Loss: {self.loss_type}")
+        print(f"Early-stop patience: {self.patience}")
+        print(f"Gradient clip: {self.grad_clip}")
+        print(f"Model: {self.model_type}")
+        print(f"Dataset: {self.dataset_name}")
+
+        if self.model_type == "NewSearch":
+            print(f"Drop path: {self.drop_path}")
+
+        for e in range(self.epochs):
+            print(f"\nEpoch {e+1}/{self.epochs}")
+
+            if hasattr(self.model, "drop_path_prob"):
+                self.model.drop_path_prob = self.drop_path
+
+            start = time.time()
+
+            train_auc, train_obj = train_step(
+                train_queue,
+                self.model,
+                criterion,
+                optimizer,
+                self.model_type,
+                self.grad_clip,
+            )
+
+            if e == 0:
+                print(
+                    f"# params: "
+                    f"{sum(p.numel() for p in self.model.parameters())}"
+                )
+
+            (
+                valid_auc,
+                valid_acc,
+                valid_precision,
+                valid_recall,
+                valid_f1,
+                valid_f2,
+                valid_obj,
+            ) = valid_step(
+                valid_queue,
+                self.model,
+                criterion,
+                self.dataset_name,
+                self.model_type,
+            )
+
+            scheduler.step()
+
+            print(
+                f"Epoch {e+1}/{self.epochs} | "
+                f"train_auc={train_auc:.4f} | "
+                f"train_loss={train_obj:.6f} | "
+                f"valid_auc={valid_auc:.4f} | "
+                f"valid_acc={valid_acc:.4f} | "
+                f"valid_precision={valid_precision:.4f} | "
+                f"valid_recall={valid_recall:.4f} | "
+                f"valid_f1={valid_f1:.4f} | "
+                f"valid_f2={valid_f2:.4f} | "
+                f"valid_loss={valid_obj:.6f}"
+            )
+
+            if valid_f2 > best_valid_f2:
+                best_valid_f2 = valid_f2
+                best_epoch = e + 1
+
+                new_checkpoint = (
+                    f"{self.save_path}/"
+                    f"{e:03d}_{self.model_type}_{self.dataset_name}.pth"
+                )
+
+                # Keep only the current best checkpoint.
+                if (
+                    best_checkpoint is not None
+                    and os.path.isfile(best_checkpoint)
+                ):
+                    os.remove(best_checkpoint)
+
+                torch.save(
+                    self.model.state_dict(),
+                    new_checkpoint,
+                )
+
+                best_checkpoint = new_checkpoint
+
+                best_metrics = {
+                    "auc": float(valid_auc),
+                    "acc": float(valid_acc),
+                    "precision": float(valid_precision),
+                    "recall": float(valid_recall),
+                    "f1": float(valid_f1),
+                    "f2": float(valid_f2),
+                    "loss": float(valid_obj),
+                }
+
+                print(
+                    f"Saved new best model at epoch {e+1} "
+                    f"with valid_f2={valid_f2:.6f}"
+                )
+
+                early = 0
+
+            else:
+                early += 1
+
+            if early >= self.patience:
+                print(
+                    f"Early stopping at epoch {e+1} | "
+                    f"best_valid_f2={best_valid_f2:.6f}"
+                )
+                break
+
+        return {
+            "best_checkpoint": best_checkpoint,
+            "best_epoch": best_epoch,
+            "best_valid_f2": float(best_valid_f2),
+            "best_valid_metrics": best_metrics,
+        }
+
+    def test(self):
+        criterion = nn.BCELoss().cuda()
+
+        valid_queue = torch.utils.data.DataLoader(
+                self.valid_data, batch_size=1,
+                pin_memory=False, num_workers=0)
+
+        start = time.time()
+
+        voicebank_map = None
+        if self.dataset_name == 'Voicebank28':
+            voicebank_map = load_voicebank_map('../../datasets/Voicebank28/log_testset.txt')
+
+        test_metrics = test_step(
+            valid_queue, self.model, criterion, self.model_type, self.window,
+            dataset_name=self.dataset_name,
+            voicebank_map=voicebank_map
+        )
+
+        print(
+            f"Model:{self.model_type} | "
+            f"train:{self.dataset_name} | "
+            f"test:{self.test_data} | "
+            f"test_auc:{test_metrics['auc']:.4f} | "
+            f"test_acc:{test_metrics['acc']:.4f} | "
+            f"test_precision:{test_metrics['precision']:.4f} | "
+            f"test_recall:{test_metrics['recall']:.4f} | "
+            f"test_f1:{test_metrics['f1']:.4f} | "
+            f"test_f2:{test_metrics['f2']:.4f}"
+        )
+
+        return test_metrics
+
+"""
+    def train(self):
         criterion = nn.BCELoss().cuda()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
@@ -374,37 +680,9 @@ class Trainer:
             if early == 10:
                 print(f'epoch:{e+1}, best valid:{best_single_valid}')
                 break
+"""
 
-    def test(self):
-        criterion = nn.BCELoss().cuda()
-
-        valid_queue = torch.utils.data.DataLoader(
-                self.valid_data, batch_size=1,
-                pin_memory=False, num_workers=0)
-
-        start = time.time()
-
-        voicebank_map = None
-        if self.dataset_name == 'Voicebank28':
-            voicebank_map = load_voicebank_map('../../datasets/Voicebank28/log_testset.txt')
-
-        test_auc, test_acc, test_precision, test_recall, test_f1 = test_step(
-            valid_queue, self.model, criterion, self.model_type, self.window,
-            dataset_name=self.dataset_name,
-            voicebank_map=voicebank_map
-        )
-        
-        
-
-        print(
-            f"Model:{self.model_type} | train:{self.dataset_name} | test:{self.test_data} | "
-            f"test_auc:{test_auc:.4f} | test_acc:{test_acc:.4f} | "
-            f"test_precision:{test_precision:.4f} | test_recall:{test_recall:.4f} | "
-            f"test_f1:{test_f1:.4f}"
-        )
-
-
-def train_step(train_queue, model, criterion, optimizer, model_type):
+def train_step(train_queue, model, criterion, optimizer, model_type, grad_clip):
     objs = AvgrageMeter()
     preds, targets = [], []
     model.train()
@@ -426,7 +704,8 @@ def train_step(train_queue, model, criterion, optimizer, model_type):
         preds.append(logits.view(-1).detach()) 
         targets.append(target.view(-1).detach())
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+        if grad_clip is not None and grad_clip > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         n = inputs.size(0)
         objs.update(loss.item(), n)
@@ -515,10 +794,11 @@ def valid_step(valid_queue, model, criterion, dataset, model_type):
     precision = precision_score(true_labels, pred_labels, zero_division=0)
     recall = recall_score(true_labels, pred_labels, zero_division=0)
     f1 = f1_score(true_labels, pred_labels, zero_division=0)
+    f2 = fbeta_score(true_labels, pred_labels, beta=2, zero_division=0)
 
     del preds, targets
 
-    return auc, acc, precision, recall, f1, objs.avg
+    return auc, acc, precision, recall, f1, f2, objs.avg
 
 """
 def test_step(valid_queue, model, criterion, model_type, window):
@@ -717,6 +997,7 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
         f"precision={global_metrics['precision']:.4f} | "
         f"recall={global_metrics['recall']:.4f} | "
         f"f1={global_metrics['f1']:.4f} | "
+        f"f2={global_metrics['f2']:.4f} | "
         f"miss_rate={global_metrics['miss_rate']:.4f} | "
         f"false_alarm_rate={global_metrics['false_alarm_rate']:.4f}"
     )
@@ -889,7 +1170,6 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
                 f"f1={m['f1']:.4f} | miss_rate={m['miss_rate']:.4f} | "
                 f"false_alarm_rate={m['false_alarm_rate']:.4f}"
             )
-    """
 
     return (
         global_metrics["auc"],
@@ -898,6 +1178,9 @@ def test_step(valid_queue, model, criterion, model_type, window, dataset_name=No
         global_metrics["recall"],
         global_metrics["f1"],
     )
+    """
+
+    return global_metrics
 
 
 class VAD_Dataset(torch.utils.data.Dataset):
@@ -1082,7 +1365,7 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type)
     return outputs / (total_counts + 1e-8)
 
 
-def get_model(model_type, dataset_name, mode, n_mels, save_path, init_checkpoint=None):
+def get_model(model_type, dataset_name, mode, n_mels, save_path, init_checkpoint=None,sa_dropout=0.0):
     if model_type == 'BDNN':
         model = bDNN().cuda()
     elif model_type == 'ACAM':
@@ -1090,7 +1373,8 @@ def get_model(model_type, dataset_name, mode, n_mels, save_path, init_checkpoint
     elif model_type == 'STA':
         model = LeeVAD(n_mels).cuda()
     elif model_type == 'SL_model':
-        model = SelfAttentiveVAD(n_mels).cuda()
+        model = SelfAttentiveVAD(n_mels, dropout=sa_dropout).cuda()
+
     elif model_type =='Darts2D':
         genotype = Genotype(normal=[('zero_original', 0), ('skip_connect_original', 1),
                                     ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
@@ -1180,17 +1464,35 @@ if __name__ == '__main__':
     parser.add_argument('--save_path', type=str, default='./saved_model')
     parser.add_argument('--init_checkpoint',type=str,default=None,help=('Optional .pth checkpoint used to initialize the model and allow for model fine-tuning during training. '),)
     parser.add_argument('--n_mels', type=int, default=80)
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--learning_rate", type=float, default=1e-3,)
+    parser.add_argument("--weight_decay", type=float, default=0.0,)
+    parser.add_argument("--loss_type", type=str, default="bce", choices=["bce","weighted_bce","focal"])
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--grad_clip", type=float, default=GRAD_CLIP)
+    parser.add_argument("--drop_path", type=float, default=0.0)
+    parser.add_argument("--sa_dropout", type=float, default=0.0)
  
     args = parser.parse_args()
 
-    model = get_model(args.model, args.dataset, args.mode, args.n_mels, args.save_path, args.init_checkpoint)
-
+    model = get_model(args.model, args.dataset, args.mode, args.n_mels, args.save_path, init_checkpoint=args.init_checkpoint, sa_dropout=args.sa_dropout)
+    
     trainer_args = {'dataset': args.dataset,
                     'test_dataset': args.test_dataset,
                     'window': [-19, -9, -1, 0, 1, 9, 19],
                     'mode': args.mode,
                     'model_type': args.model, 'model': model,
-                    'n_mels': args.n_mels}
+                    'n_mels': args.n_mels,
+                    'batch_size': args.batch_size,
+                    'learning_rate': args.learning_rate,
+                    'weight_decay': args.weight_decay,
+                    'loss_type': args.loss_type,
+                    'patience': args.patience,
+                    'grad_clip': args.grad_clip,
+                    'drop_path': args.drop_path,
+                    }
+
     datapath_mapper = {
         # Add mapping for ONDRI fine-tuning dataset (About 512 participants; Confirm if DDK files only or narrative files as well; Need to create using Silero)
         'train': {
@@ -1219,7 +1521,7 @@ if __name__ == '__main__':
     if args.mode =='train':
         trainer = Trainer(datapath_mapper[args.mode][args.dataset],
                           args.save_path,
-                          epochs=30,
+                          epochs=args.epochs,
                           **trainer_args)
         trainer.train()
     else:
