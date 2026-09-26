@@ -2,7 +2,7 @@
 # Cross-Domain Voice Activity Detection on Healthy and Neurodegenerative Speech Across Narrative and Diadochokinetic Tasks
 
 
-This repository accompanies our IEEE ICASSP 2027 paper:
+This repository accompanies our research paper:
 
 > **Cross-Domain Voice Activity Detection on Healthy and Neurodegenerative Speech Across Narrative and Diadochokinetic Tasks**  
 > Humzah Zahid Malik, Arman Hassanpour, Benjamin James Haller, Angela C. Roberts  
